@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shared Clipboard</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 2rem;
+      }
+      #clip {
+        width: 100%;
+        height: 300px;
+        border: 1px solid #ccc;
+        padding: 0.5rem;
+        overflow: auto;
+      }
+      #history {
+        margin-top: 1rem;
+        max-height: 200px;
+        overflow-y: auto;
+        border-top: 1px solid #eee;
+      }
+      .entry {
+        padding: 0.5rem;
+        border-bottom: 1px solid #eee;
+        cursor: pointer;
+      }
+      .entry:hover {
+        background: #f9f9f9;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Shared Clipboard</h1>
+    <div id="clip" contenteditable="true"></div>
+    <button id="copyBtn">Broadcast</button>
+    <div id="history"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      const clip = document.getElementById("clip");
+      const copyBtn = document.getElementById("copyBtn");
+      const historyDiv = document.getElementById("history");
+
+      // Render history entries
+      function renderHistory(list) {
+        historyDiv.innerHTML = "";
+        list.forEach((html) => {
+          const div = document.createElement("div");
+          div.className = "entry";
+          div.innerHTML = html;
+          div.addEventListener("click", () => {
+            clip.innerHTML = html;
+            broadcast(html);
+          });
+          historyDiv.appendChild(div);
+        });
+      }
+
+      // Broadcast function
+      function broadcast(html) {
+        socket.emit("update", html);
+      }
+
+      // On button click
+      copyBtn.addEventListener("click", () => {
+        broadcast(clip.innerHTML);
+      });
+
+      // Receive initial history
+      socket.on("history", (list) => renderHistory(list));
+      // Receive updates
+      socket.on("update", (html) => {
+        clip.innerHTML = html;
+        // Prepend to history display
+        renderHistory(
+          historyDiv.children.length
+            ? [html, ...Array.from(historyDiv.children).map((e) => e.innerHTML)]
+            : [html]
+        );
+      });
+    </script>
+  </body>
+</html>
