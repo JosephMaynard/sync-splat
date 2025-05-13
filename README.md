@@ -1,6 +1,6 @@
 # Sync Splat
 
-**Sync Splat** is a simple Node.js application that syncs clipboard content across devices on your local network in real time. It preserves rich text formatting and maintains an optional history buffer, providing a quick fallback when native shared clipboards or corporate VPNs block direct copy-paste.
+**Sync Splat** is a simple Node.js application that syncs clipboard content across devices on your local network in real time. It preserves rich text formatting and maintains an optional history buffer, providing a quick fallback when native shared clipboards are unavailable.
 
 ## Features
 

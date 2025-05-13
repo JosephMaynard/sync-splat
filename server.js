@@ -28,7 +28,7 @@ io.on("connection", (socket) => {
 });
 
 // Use a less common port to avoid conflicts
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3011;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Sync Splat server running on port ${PORT}`);
