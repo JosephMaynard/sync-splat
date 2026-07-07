@@ -9,7 +9,7 @@ import type { HistoryStore } from "./store";
 export type SyncSplatIO = Server<ClientToServerEvents, ServerToClientEvents>;
 
 /** Simple per-socket sliding-window rate limiter. */
-function createRateLimiter(): () => boolean {
+export function createRateLimiter(): () => boolean {
   const events: number[] = [];
   return function allow(): boolean {
     const now = Date.now();
