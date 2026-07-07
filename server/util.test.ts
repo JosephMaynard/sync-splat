@@ -24,6 +24,12 @@ describe("sanitizeFilename", () => {
     expect(sanitizeFilename("evil\r\nname.txt")).toBe("evilname.txt");
   });
 
+  it("strips Unicode bidi controls that can spoof extensions", () => {
+    // U+202E (RLO) renders "invoice_‮fdp.exe" as "invoice_exe.pdf".
+    expect(sanitizeFilename("invoice_‮fdp.exe")).toBe("invoice_fdp.exe");
+    expect(sanitizeFilename("‏a‎‪‫‬‭⁦⁧⁨⁩b.txt")).toBe("ab.txt");
+  });
+
   it("falls back to 'file' for empty input", () => {
     expect(sanitizeFilename("")).toBe("file");
   });

@@ -52,10 +52,16 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       (req.headers["content-type"] ?? "").split(";")[0].trim() ||
       "application/octet-stream";
 
+    // Destroy the request only once the error response has flushed, so the
+    // client actually sees the 413 instead of a reset connection.
+    const rejectTooLarge = () => {
+      res.once("finish", () => req.destroy());
+      sendJson(res, 413, { error: "file too large" });
+    };
+
     const contentLength = Number(req.headers["content-length"]);
     if (Number.isFinite(contentLength) && contentLength > maxFileBytes) {
-      sendJson(res, 413, { error: "file too large" });
-      req.destroy();
+      rejectTooLarge();
       return;
     }
 
@@ -68,8 +74,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       total += chunk.length;
       if (total > maxFileBytes) {
         aborted = true;
-        sendJson(res, 413, { error: "file too large" });
-        req.destroy();
+        rejectTooLarge();
         return;
       }
       chunks.push(chunk);

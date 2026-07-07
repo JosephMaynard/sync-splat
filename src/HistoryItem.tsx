@@ -92,14 +92,15 @@ export default function HistoryItem({ item, onDelete }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const handleCopy = async () => {
-    if (item.kind !== "text") return;
-    const ok = await copyHtml(item.html);
-    if (ok) setCopied(true);
-  };
-
   const cleanHtml =
     item.kind === "text" ? DOMPurify.sanitize(item.html) : "";
+
+  const handleCopy = async () => {
+    if (item.kind !== "text") return;
+    // Copy the sanitized HTML — what we render, not the raw payload.
+    const ok = await copyHtml(cleanHtml);
+    if (ok) setCopied(true);
+  };
 
   return (
     <>

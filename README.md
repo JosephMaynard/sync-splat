@@ -102,7 +102,7 @@ The QR encoder in [`qr/`](qr/README.md) is hand‑rolled and dependency‑free.
 
 ## Development
 
-Requires Node ≥ 18.17 and [pnpm].
+Requires Node ≥ 20 and [pnpm].
 
 ```bash
 pnpm install      # install dependencies

@@ -59,11 +59,15 @@ export function sanitizeFilename(raw: string): string {
   // Keep only the final path segment.
   const slash = Math.max(input.lastIndexOf("/"), input.lastIndexOf(BACKSLASH));
   const segment = slash >= 0 ? input.slice(slash + 1) : input;
-  // Drop control chars, DEL and any residual separators.
+  // Drop control chars, DEL, residual separators, and Unicode bidi controls
+  // (U+200E/F, U+202A–E, U+2066–9) which can visually spoof extensions.
   let cleaned = "";
   for (const ch of segment) {
     const code = ch.codePointAt(0) ?? 0;
     if (code < 0x20 || code === 0x7f) continue;
+    if (code === 0x200e || code === 0x200f) continue;
+    if (code >= 0x202a && code <= 0x202e) continue;
+    if (code >= 0x2066 && code <= 0x2069) continue;
     if (ch === "/" || ch === BACKSLASH) continue;
     cleaned += ch;
   }

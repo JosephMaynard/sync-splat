@@ -114,7 +114,11 @@ export default function App() {
 
   const uploadFiles = useCallback(
     (files: FileList | File[]) => {
-      for (const f of Array.from(files)) void uploadFile(f);
+      // Sequential so multi-file drops don't race the server or each other's
+      // error reporting; fire-and-forget from the caller's perspective.
+      void (async () => {
+        for (const f of Array.from(files)) await uploadFile(f);
+      })();
     },
     [uploadFile],
   );
@@ -140,6 +144,9 @@ export default function App() {
       if (dragDepth.current === 0) setDragging(false);
     };
     const onDrop = (e: DragEvent) => {
+      // Only intercept drops that carry files — plain text/link drops must
+      // keep working (e.g. dragging text into the compose box).
+      if (!hasFiles(e)) return;
       e.preventDefault();
       dragDepth.current = 0;
       setDragging(false);

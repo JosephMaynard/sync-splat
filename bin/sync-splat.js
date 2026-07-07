@@ -77,9 +77,22 @@ if (!existsSync(fileURLToPath(entryUrl))) {
 
 const { createSyncSplatServer } = await import(entryUrl.href);
 
-const server = await createSyncSplatServer({ port, maxFileBytes, banner: true });
+let server;
+try {
+  server = await createSyncSplatServer({ port, maxFileBytes, banner: true });
+} catch (err) {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`sync-splat: port ${port} is already in use.`);
+    console.error("Pick another with `sync-splat --port <n>`.");
+  } else {
+    console.error(`sync-splat: failed to start — ${err?.message ?? err}`);
+  }
+  process.exit(1);
+}
 
 function shutdown() {
+  // Force-exit fallback in case socket.io blocks close (e.g. mid-upgrade).
+  setTimeout(() => process.exit(0), 3000).unref();
   server
     .close()
     .then(() => process.exit(0))
