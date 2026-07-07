@@ -3,8 +3,11 @@ import {
   QrCodeIcon,
   PaperClipIcon,
   ArrowUpTrayIcon,
+  SunIcon,
+  MoonIcon,
 } from "@heroicons/react/24/outline";
 import { socket } from "./socket";
+import { getTheme, toggleTheme, watchSystemTheme, type Theme } from "./theme";
 import type { Item, ServerInfo } from "../shared/types";
 import { LIMITS } from "../shared/types";
 import HistoryItem from "./HistoryItem";
@@ -20,9 +23,17 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [maxFileBytes, setMaxFileBytes] = useState(LIMITS.maxFileBytes);
+  const [theme, setThemeState] = useState<Theme>(getTheme);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+
+  /* follow the OS theme live while the user hasn't picked an explicit one */
+  useEffect(() => watchSystemTheme(setThemeState), []);
+
+  const onToggleTheme = useCallback(() => {
+    setThemeState(toggleTheme());
+  }, []);
 
   /* socket lifecycle */
   useEffect(() => {
@@ -180,15 +191,15 @@ export default function App() {
   }, [uploadFiles]);
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900">
-      <header className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:px-6">
+    <div className="min-h-screen bg-gray-100 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+      <header className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-gray-800 dark:bg-gray-900">
         <div className="flex items-center gap-2">
-          <Logo className="h-8 w-8 text-blue-600" />
+          <Logo className="h-8 w-8 text-blue-600 dark:text-blue-500" />
           <h1 className="text-xl font-bold sm:text-2xl">Sync Splat</h1>
         </div>
         <div className="flex items-center gap-3">
           <span
-            className="flex items-center gap-1.5 text-xs font-medium text-gray-500"
+            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400"
             title={connected ? "Connected" : "Reconnecting"}
           >
             <span
@@ -203,8 +214,21 @@ export default function App() {
           </span>
           <button
             type="button"
+            onClick={onToggleTheme}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? (
+              <SunIcon className="size-5" aria-hidden="true" />
+            ) : (
+              <MoonIcon className="size-5" aria-hidden="true" />
+            )}
+          </button>
+          <button
+            type="button"
             onClick={() => setShowQr(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             title="Show QR code"
           >
             <QrCodeIcon className="size-5" aria-hidden="true" />
@@ -222,7 +246,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-600 hover:border-blue-400 hover:text-blue-600 sm:w-auto"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-600 hover:border-blue-400 hover:text-blue-600 sm:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-blue-500 dark:hover:text-blue-400"
             >
               <PaperClipIcon className="size-5" aria-hidden="true" />
               Share a file
@@ -237,12 +261,12 @@ export default function App() {
                 e.target.value = "";
               }}
             />
-            <p className="mt-2 text-xs text-gray-400">
+            <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
               …or drag a file onto the page, or paste one. Max{" "}
               {humanSize(maxFileBytes)}.
             </p>
             {uploadError && (
-              <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+              <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
                 {uploadError}
               </p>
             )}
@@ -251,9 +275,11 @@ export default function App() {
 
         {/* history column */}
         <section className="flex min-h-0 flex-col">
-          <h2 className="mb-3 text-sm font-medium text-gray-600">History</h2>
+          <h2 className="mb-3 text-sm font-medium text-gray-600 dark:text-gray-400">
+            History
+          </h2>
           {history.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400">
+            <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-500">
               Nothing shared yet. Broadcast some text or share a file to get
               started.
             </p>
@@ -270,8 +296,8 @@ export default function App() {
       {showQr && <QrModal onClose={() => setShowQr(false)} />}
 
       {dragging && (
-        <div className="pointer-events-none fixed inset-0 z-40 grid place-items-center bg-blue-600/10 p-8">
-          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-blue-500 bg-white/90 px-10 py-12 text-blue-700 shadow-lg">
+        <div className="pointer-events-none fixed inset-0 z-40 grid place-items-center bg-blue-600/10 p-8 dark:bg-blue-500/10">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-blue-500 bg-white/90 px-10 py-12 text-blue-700 shadow-lg dark:border-blue-400 dark:bg-gray-900/90 dark:text-blue-300">
             <ArrowUpTrayIcon className="size-10" aria-hidden="true" />
             <p className="text-lg font-semibold">Drop to share</p>
           </div>
