@@ -6,11 +6,24 @@ import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
   { ignores: ['dist'] },
+  // Base rules for all TypeScript/TSX across the repo.
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 2022,
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+    },
+  },
+  // Client: browser globals + React plugins.
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    languageOptions: {
       globals: globals.browser,
     },
     plugins: {
@@ -23,6 +36,13 @@ export default tseslint.config(
         'warn',
         { allowConstantExport: true },
       ],
+    },
+  },
+  // Server, QR encoder and the CLI: Node globals.
+  {
+    files: ['server/**/*.ts', 'qr/**/*.ts', 'bin/**/*.js'],
+    languageOptions: {
+      globals: globals.node,
     },
   },
 )

@@ -1,8 +1,13 @@
-import { io, Socket } from "socket.io-client";
-import type { Payload } from "./types";
+import { io, type Socket } from "socket.io-client";
+import type {
+  ClientToServerEvents,
+  ServerToClientEvents,
+} from "../shared/types";
 
-export const socket: Socket = io({
+/**
+ * Same-origin socket. In production the server serves the client, so `io()`
+ * with no URL connects back to the origin. In dev, Vite proxies `/socket.io`.
+ */
+export const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({
   autoConnect: true,
 });
-
-export const sendUpdate = (payload: Payload) => socket.emit("update", payload);

@@ -1,41 +1,71 @@
 {
-  "name": "sync-splat-react",
-  "private": true,
-  "version": "0.0.0",
+  "name": "sync-splat",
+  "version": "0.1.0",
+  "description": "Share text and small files between devices on your local network. Run it, scan the QR code, splat.",
   "type": "module",
+  "license": "MIT",
+  "author": "Joseph Maynard",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/josephmaynard/sync-splat"
+  },
+  "keywords": [
+    "clipboard",
+    "lan",
+    "share",
+    "sync",
+    "qr",
+    "local-network"
+  ],
+  "bin": {
+    "sync-splat": "bin/sync-splat.js"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "dev": "concurrently \"npm:start\" \"npm:dev:client\"",
-    "start": "node server.cjs",
+    "dev": "concurrently -k npm:dev:server npm:dev:client",
+    "dev:server": "npm run build:server && node bin/sync-splat.js",
     "dev:client": "vite --host",
-    "build": "tsc -b && vite build",
+    "start": "node bin/sync-splat.js",
+    "typecheck": "tsc -b",
+    "build": "npm run typecheck && npm run build:client && npm run build:server",
+    "build:client": "vite build",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server/index.js",
+    "test": "vitest run",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "prepublishOnly": "npm run lint && npm run build && npm run test"
   },
   "dependencies": {
-    "@heroicons/react": "^2.2.0",
-    "cors": "^2.8.5",
-    "express": "^5.1.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "socket": "^1.0.0",
-    "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1"
+    "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
+    "@heroicons/react": "^2.2.0",
     "@tailwindcss/vite": "^4.1.10",
+    "@types/node": "^22.15.0",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.4.1",
     "concurrently": "^9.1.2",
+    "dompurify": "^3.2.4",
+    "esbuild": "^0.25.0",
     "eslint": "^9.25.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.19",
     "globals": "^16.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "socket.io-client": "^4.8.1",
     "tailwindcss": "^4.1.10",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.30.1",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vitest": "^3.1.0"
   },
   "packageManager": "pnpm@9.5.0+sha512.140036830124618d624a2187b50d04289d5a087f326c9edfc0ccd733d76c4f52c3a313d4fc148794a2a9d81553016004e6742e8cf850670268a7387fc220c903"
 }
