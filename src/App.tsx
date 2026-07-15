@@ -16,6 +16,17 @@ import QrModal from "./QrModal";
 import Logo from "./Logo";
 import { humanSize } from "./util";
 
+/** Client-local id for staged attachments. crypto.randomUUID is unavailable
+ *  in insecure contexts (http:// on a phone — our primary use case). */
+let localIdCounter = 0;
+function newLocalId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  localIdCounter += 1;
+  return `att-${Date.now()}-${localIdCounter}`;
+}
+
 /** A file staged in the compose area, not yet uploaded. */
 export interface PendingAttachment {
   localId: string;
@@ -156,7 +167,7 @@ export default function App() {
           continue;
         }
         accepted.push({
-          localId: crypto.randomUUID(),
+          localId: newLocalId(),
           file,
           previewUrl: file.type.startsWith("image/")
             ? URL.createObjectURL(file)

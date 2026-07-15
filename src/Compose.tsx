@@ -101,7 +101,7 @@ export default function Compose({
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         data-placeholder="Type or paste rich text, then broadcast to every device…"
-        className="min-h-40 flex-1 overflow-auto rounded-lg border border-gray-300 bg-white p-4 text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-500/30 dark:empty:before:text-gray-500"
+        className="min-h-40 flex-1 overflow-auto rounded-lg border border-gray-300 bg-white p-4 text-gray-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-200 empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-500/30 dark:empty:before:text-gray-500"
       />
 
       {hasAttachments && (
