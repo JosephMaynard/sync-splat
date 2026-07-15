@@ -20,7 +20,7 @@ Everything lives in memory and disappears when you stop the server. There is no 
 - **One command.** `npx sync-splat` — no install, no config.
 - **Phone-friendly.** A QR code in the terminal opens the app on any device on the network.
 - **Rich text.** Paste formatted text; it is sanitized and broadcast to everyone instantly.
-- **Files.** Drag‑and‑drop, pick, or paste files. Images preview inline; everything else downloads.
+- **Files.** Drag‑and‑drop, pick, or paste a screenshot — files stage as previews in the compose box and send when you broadcast. Images preview inline; everything else downloads.
 - **Live sync.** History is shared over WebSockets — new items appear everywhere at once.
 - **Zero runtime dependencies to speak of.** The server is `node:http` + [socket.io]; the QR encoder is hand‑rolled. No Express, no CORS shims.
 - **Ephemeral & private.** In‑memory only, same‑origin only, MIT licensed.
