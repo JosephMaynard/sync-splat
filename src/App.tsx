@@ -40,7 +40,9 @@ export default function App() {
 
   /* revoke any outstanding object URLs when the app unmounts */
   const attachmentsRef = useRef(attachments);
-  attachmentsRef.current = attachments;
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
   useEffect(
     () => () => {
       for (const a of attachmentsRef.current) {
