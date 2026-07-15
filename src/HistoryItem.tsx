@@ -71,7 +71,7 @@ async function copyHtml(html: string): Promise<boolean> {
 }
 
 const iconButton =
-  "relative inline-flex items-center bg-white px-2.5 py-2 text-gray-500 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-10";
+  "relative inline-flex items-center bg-white px-2.5 py-2 text-gray-500 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-10 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-gray-700";
 
 export default function HistoryItem({ item, onDelete }: Props) {
   const [open, setOpen] = useState(false);
@@ -104,10 +104,10 @@ export default function HistoryItem({ item, onDelete }: Props) {
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         {item.kind === "text" ? (
           <div
-            className="prose-sm max-h-16 min-w-0 flex-1 overflow-hidden text-sm text-gray-700 [&_*]:!my-0"
+            className="prose-sm max-h-16 min-w-0 flex-1 overflow-hidden text-sm text-gray-700 [&_*]:!my-0 dark:text-gray-200"
             dangerouslySetInnerHTML={{ __html: cleanHtml }}
           />
         ) : (
@@ -120,15 +120,17 @@ export default function HistoryItem({ item, onDelete }: Props) {
                 className="max-h-14 w-14 shrink-0 rounded object-cover"
               />
             ) : (
-              <span className="grid size-11 shrink-0 place-items-center rounded bg-gray-100 text-gray-500">
+              <span className="grid size-11 shrink-0 place-items-center rounded bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                 <DocumentIcon className="size-6" aria-hidden="true" />
               </span>
             )}
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-gray-800">
+              <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
                 {middleTruncate(item.name)}
               </p>
-              <p className="text-xs text-gray-400">{humanSize(item.size)}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                {humanSize(item.size)}
+              </p>
             </div>
           </div>
         )}
@@ -172,7 +174,7 @@ export default function HistoryItem({ item, onDelete }: Props) {
           )}
           <button
             type="button"
-            className={`${iconButton} -ml-px rounded-r-md hover:text-red-600`}
+            className={`${iconButton} -ml-px rounded-r-md hover:text-red-600 dark:hover:text-red-400`}
             title="Delete"
             onClick={() => onDelete(item.id)}
           >
@@ -188,18 +190,21 @@ export default function HistoryItem({ item, onDelete }: Props) {
           onClick={() => setOpen(false)}
         >
           <div
-            className="relative max-h-[80vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-6 shadow-xl"
+            className="relative max-h-[80vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-6 shadow-xl dark:border dark:border-gray-800 dark:bg-gray-900"
             onClick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
-              className="absolute right-3 top-3 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              className="absolute right-3 top-3 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
               onClick={() => setOpen(false)}
               aria-label="Close"
             >
               <XMarkIcon className="size-5" aria-hidden="true" />
             </button>
-            <div dangerouslySetInnerHTML={{ __html: cleanHtml }} />
+            <div
+              className="text-gray-800 dark:text-gray-200"
+              dangerouslySetInnerHTML={{ __html: cleanHtml }}
+            />
           </div>
         </div>
       )}

@@ -75,40 +75,42 @@ export default function QrModal({ onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl"
+        className="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl dark:border dark:border-gray-800 dark:bg-gray-900"
         onClick={(e) => e.stopPropagation()}
       >
         <button
           type="button"
-          className="absolute right-3 top-3 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+          className="absolute right-3 top-3 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
           onClick={onClose}
           aria-label="Close"
         >
           <XMarkIcon className="size-5" aria-hidden="true" />
         </button>
 
-        <h2 className="mb-4 text-lg font-semibold text-gray-900">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
           Scan to open on another device
         </h2>
 
         {error ? (
-          <p className="text-sm text-red-600">{error}</p>
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         ) : (
           <div className="flex flex-col items-center gap-4">
             {svg ? (
+              /* Keep the QR on a white tile even in dark mode so scanners
+                 retain the contrast they need. */
               <div
-                className="w-56 [&>svg]:h-full [&>svg]:w-full"
+                className="w-56 rounded-lg bg-white p-3 [&>svg]:h-full [&>svg]:w-full"
                 dangerouslySetInnerHTML={{ __html: svg }}
               />
             ) : (
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
                 {url ? "QR unavailable — use the address below." : "Loading…"}
               </p>
             )}
             {url && (
               <a
                 href={url}
-                className="break-all text-center text-sm font-medium text-blue-600 hover:underline"
+                className="break-all text-center text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
               >
                 {url}
               </a>
