@@ -8,6 +8,21 @@ export interface BannerInfo {
 }
 
 /**
+ * Wrap a URL in an OSC 8 terminal hyperlink so supporting terminals (iTerm2,
+ * Terminal.app, VS Code, Windows Terminal, …) make it clickable, with an
+ * underline for affordance. Only when stdout is an interactive terminal —
+ * piped output, files, and CI logs get the plain URL.
+ */
+export function clickable(url: string): string {
+  if (!process.stdout.isTTY || process.env.TERM === "dumb") return url;
+  const ESC = "\u001b";
+  const BEL = "\u0007";
+  const linkOpen = `${ESC}]8;;${url}${BEL}`;
+  const linkClose = `${ESC}]8;;${BEL}`;
+  return `${linkOpen}${ESC}[4m${url}${ESC}[24m${linkClose}`;
+}
+
+/**
  * Print the startup banner: title, localhost + LAN URLs, an optional client
  * build warning, and a terminal QR code for the first LAN URL. QR encoding is
  * wrapped in try/catch because encodeQR throws on payloads over its capacity.
@@ -19,10 +34,10 @@ export function printBanner(info: BannerInfo): void {
     `  sync-splat v${VERSION}`,
     "  Share text and files across your local network.",
     "",
-    `  Local:    http://localhost:${port}`,
+    `  Local:    ${clickable(`http://localhost:${port}`)}`,
   ];
   for (const url of urls) {
-    lines.push(`  Network:  ${url}`);
+    lines.push(`  Network:  ${clickable(url)}`);
   }
   if (urls.length === 0) {
     lines.push("  Network:  (no LAN interface detected)");
@@ -40,7 +55,7 @@ export function printBanner(info: BannerInfo): void {
   try {
     const matrix = encodeQR(primary);
     console.log(renderQRToTerminal(matrix, { quietZone: 2 }));
-    console.log(`  Scan to open on your phone:  ${primary}`);
+    console.log(`  Scan to open on your phone:  ${clickable(primary)}`);
     console.log("");
   } catch {
     console.log(`  (QR skipped — URL exceeds encoder capacity: ${primary})`);
