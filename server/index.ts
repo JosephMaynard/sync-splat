@@ -12,6 +12,7 @@ import { createStaticHandler } from "./static";
 import { createRequestHandler } from "./http";
 import { registerSocketHandlers, type SyncSplatIO } from "./socket";
 import { VERSION, getLanUrls } from "./net";
+import { isAllowedOrigin } from "./util";
 import { printBanner } from "./banner";
 
 export { VERSION };
@@ -62,6 +63,15 @@ export async function createSyncSplatServer(
 ): Promise<SyncSplatServer> {
   const host = opts.host ?? "0.0.0.0";
   const maxFileBytes = opts.maxFileBytes ?? LIMITS.maxFileBytes;
+  if (maxFileBytes > LIMITS.maxTotalFileBytes) {
+    // A single file larger than total storage would be accepted, immediately
+    // evict itself, and 201 with an undownloadable id. Refuse up front.
+    throw new Error(
+      `max file size (${Math.round(maxFileBytes / 1024 / 1024)} MB) cannot ` +
+        `exceed the ${Math.round(LIMITS.maxTotalFileBytes / 1024 / 1024)} MB ` +
+        `total storage cap`,
+    );
+  }
   const clientDir =
     opts.clientDir !== undefined ? opts.clientDir : defaultClientDir();
 
@@ -73,6 +83,12 @@ export async function createSyncSplatServer(
     // Same-origin in prod (server serves the client); Vite proxy in dev.
     // No CORS configuration by design.
     serveClient: false,
+    // WebSocket handshakes are not subject to CORS, so enforce same-origin
+    // ourselves: a hostile web page cannot omit or spoof its Origin header,
+    // while CLI/native clients (which send none) remain able to connect.
+    allowRequest: (req, callback) => {
+      callback(null, isAllowedOrigin(req.headers.origin, req.headers.host));
+    },
   });
 
   let boundPort = opts.port;

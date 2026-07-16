@@ -8,6 +8,7 @@ import {
   UUID_RE,
   asciiFallbackName,
   encodeRFC5987,
+  isAllowedOrigin,
   isInlineImage,
   sanitizeFilename,
   sendJson,
@@ -153,6 +154,13 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     if (pathname === "/api/upload") {
       if (req.method !== "POST") {
         sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      // Cross-site "simple" POSTs execute even without CORS headers — CORS
+      // only blocks reading the response. Reject writes from other origins.
+      if (!isAllowedOrigin(req.headers.origin, req.headers.host)) {
+        sendStatus(res, 403, "Cross-origin requests are not allowed");
+        req.destroy();
         return;
       }
       handleUpload(req, res, url.searchParams);

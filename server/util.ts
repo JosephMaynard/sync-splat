@@ -1,6 +1,28 @@
 import type { ServerResponse } from "node:http";
 import { INLINE_IMAGE_MIMES } from "../shared/types";
 
+/**
+ * Same-origin check for browser-initiated requests. Requests without an
+ * Origin header (curl, CLI tools, same-origin navigations) are allowed.
+ * When a browser sends one — which it does for cross-site POSTs and every
+ * WebSocket handshake — its host must match the request's Host header.
+ * Neither CORS absence nor the browser blocks those writes on its own.
+ */
+export function isAllowedOrigin(
+  origin: string | string[] | undefined,
+  host: string | undefined,
+): boolean {
+  if (origin === undefined) return true;
+  const value = Array.isArray(origin) ? origin[0] : origin;
+  if (!value || !host) return false;
+  try {
+    return new URL(value).host === host;
+  } catch {
+    // Includes the literal "null" origin (sandboxed iframes, file://).
+    return false;
+  }
+}
+
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

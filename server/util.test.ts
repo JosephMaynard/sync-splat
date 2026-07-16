@@ -3,6 +3,7 @@ import {
   asciiFallbackName,
   encodeRFC5987,
   extname,
+  isAllowedOrigin,
   mimeForPath,
   sanitizeFilename,
   sendJson,
@@ -189,5 +190,38 @@ describe("double-response guards", () => {
       sendJson(res as unknown as Parameters<typeof sendJson>[0], 200, {}),
     ).not.toThrow();
     expect(res.destroyed).toBe(true);
+  });
+});
+
+describe("isAllowedOrigin", () => {
+  it("allows requests without an Origin header", () => {
+    expect(isAllowedOrigin(undefined, "192.168.1.5:3011")).toBe(true);
+  });
+
+  it("allows a matching origin", () => {
+    expect(
+      isAllowedOrigin("http://192.168.1.5:3011", "192.168.1.5:3011"),
+    ).toBe(true);
+  });
+
+  it("rejects a foreign origin", () => {
+    expect(isAllowedOrigin("http://evil.example", "192.168.1.5:3011")).toBe(
+      false,
+    );
+  });
+
+  it("rejects a host mismatch on port alone", () => {
+    expect(
+      isAllowedOrigin("http://192.168.1.5:4000", "192.168.1.5:3011"),
+    ).toBe(false);
+  });
+
+  it("rejects the literal null origin and garbage", () => {
+    expect(isAllowedOrigin("null", "192.168.1.5:3011")).toBe(false);
+    expect(isAllowedOrigin("not a url", "192.168.1.5:3011")).toBe(false);
+  });
+
+  it("rejects an origin when the Host header is missing", () => {
+    expect(isAllowedOrigin("http://192.168.1.5:3011", undefined)).toBe(false);
   });
 });

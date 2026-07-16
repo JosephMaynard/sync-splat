@@ -332,3 +332,80 @@ describe("socket.io coexistence (regression: v0.1.0 polling crash)", () => {
     expect(socket.connected).toBe(true);
   });
 });
+
+describe("origin validation", () => {
+  it("rejects cross-origin uploads with 403", async () => {
+    await start();
+    const res = await fetch(`${baseUrl}/api/upload?name=evil.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: "http://evil.example",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("accepts same-origin uploads and no-Origin (CLI) uploads", async () => {
+    await start();
+    const sameOrigin = await fetch(`${baseUrl}/api/upload?name=ok.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: `http://127.0.0.1:${port}`,
+      },
+    });
+    expect(sameOrigin.status).toBe(201);
+
+    const noOrigin = await fetch(`${baseUrl}/api/upload?name=cli.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: { "Content-Type": "text/plain" },
+    });
+    expect(noOrigin.status).toBe(201);
+  });
+
+  it("rejects socket handshakes from a foreign origin", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: { Origin: "http://evil.example" },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const failed = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(false));
+      socket.on("connect_error", () => resolve(true));
+    });
+    expect(failed).toBe(true);
+  });
+
+  it("accepts socket handshakes with a matching origin", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: { Origin: `http://127.0.0.1:${port}` },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const ok = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(true));
+      socket.on("connect_error", () => resolve(false));
+    });
+    expect(ok).toBe(true);
+  });
+});
+
+describe("configuration limits", () => {
+  it("refuses a max file size above the total storage cap", async () => {
+    await expect(
+      createSyncSplatServer({
+        port: 0,
+        host: "127.0.0.1",
+        maxFileBytes: 201 * 1024 * 1024,
+      }),
+    ).rejects.toThrow(/total storage cap/);
+  });
+});

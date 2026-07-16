@@ -12,6 +12,8 @@ interface Props {
   connected: boolean;
   sending: boolean;
   attachments: PendingAttachment[];
+  /** Server's max text broadcast size in UTF-8 bytes (from /api/info). */
+  maxTextBytes: number;
   /** Emit text (null when the box is empty), then upload staged attachments. */
   onBroadcast: (html: string | null) => void | Promise<void>;
   onRemoveAttachment: (localId: string) => void;
@@ -21,11 +23,13 @@ export default function Compose({
   connected,
   sending,
   attachments,
+  maxTextBytes,
   onBroadcast,
   onRemoveAttachment,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [empty, setEmpty] = useState(true);
+  const [tooBig, setTooBig] = useState<string | null>(null);
 
   const hasAttachments = attachments.length > 0;
   const disabled = sending || !connected || (empty && !hasAttachments);
@@ -33,6 +37,7 @@ export default function Compose({
   const syncEmpty = () => {
     const el = ref.current;
     setEmpty(!el || el.textContent?.trim() === "");
+    setTooBig(null);
   };
 
   const broadcast = () => {
@@ -40,12 +45,24 @@ export default function Compose({
     if (!el || disabled) return;
     const hasText = el.textContent?.trim() !== "";
     const html = hasText ? el.innerHTML : null;
+    // The server silently drops oversize text — check before clearing the
+    // box so the user's content is never lost.
+    if (html) {
+      const bytes = new TextEncoder().encode(html).length;
+      if (bytes > maxTextBytes) {
+        setTooBig(
+          `Too big to send (${humanSize(bytes)} — the limit is ${humanSize(maxTextBytes)}). Try attaching it as a file instead.`,
+        );
+        return;
+      }
+    }
     // Clear the box up front: the text is emitted synchronously, so a retry
     // after a failed attachment upload must not re-send it.
     if (hasText) {
       el.innerHTML = "";
       setEmpty(true);
     }
+    setTooBig(null);
     void onBroadcast(html);
   };
 
@@ -103,6 +120,12 @@ export default function Compose({
         data-placeholder="Type or paste rich text, then broadcast to every device…"
         className="min-h-40 flex-1 overflow-auto rounded-lg border border-gray-300 bg-white p-4 text-gray-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-200 empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-500/30 dark:empty:before:text-gray-500"
       />
+
+      {tooBig && (
+        <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300">
+          {tooBig}
+        </p>
+      )}
 
       {hasAttachments && (
         <ul className="mt-3 flex flex-wrap gap-2">
