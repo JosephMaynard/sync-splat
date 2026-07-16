@@ -5,6 +5,8 @@ import {
   extname,
   mimeForPath,
   sanitizeFilename,
+  sendJson,
+  sendStatus,
 } from "./util";
 
 describe("sanitizeFilename", () => {
@@ -155,5 +157,37 @@ describe("mimeForPath", () => {
 
   it("falls back to octet-stream when there is no extension", () => {
     expect(mimeForPath("Makefile")).toBe("application/octet-stream");
+  });
+});
+
+describe("double-response guards", () => {
+  function fakeRes() {
+    return {
+      headersSent: true,
+      destroyed: false,
+      destroy() {
+        this.destroyed = true;
+      },
+      writeHead() {
+        throw new Error("writeHead must not be called after headers sent");
+      },
+      end() {},
+    };
+  }
+
+  it("sendStatus destroys instead of throwing when headers already sent", () => {
+    const res = fakeRes();
+    expect(() =>
+      sendStatus(res as unknown as Parameters<typeof sendStatus>[0], 404),
+    ).not.toThrow();
+    expect(res.destroyed).toBe(true);
+  });
+
+  it("sendJson destroys instead of throwing when headers already sent", () => {
+    const res = fakeRes();
+    expect(() =>
+      sendJson(res as unknown as Parameters<typeof sendJson>[0], 200, {}),
+    ).not.toThrow();
+    expect(res.destroyed).toBe(true);
   });
 });

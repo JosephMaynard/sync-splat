@@ -110,6 +110,10 @@ export function sendJson(
   status: number,
   body: unknown,
 ): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -123,6 +127,10 @@ export function sendStatus(
   status: number,
   message = "",
 ): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(message || `${status}`);
 }

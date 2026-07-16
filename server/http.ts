@@ -135,6 +135,12 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     }
     const pathname = url.pathname;
 
+    // socket.io's engine responds to its own paths; it attached to the server
+    // before this handler, so both see every request. Never double-respond.
+    if (pathname === "/socket.io" || pathname.startsWith("/socket.io/")) {
+      return;
+    }
+
     if (pathname === "/api/info") {
       if (req.method !== "GET") {
         sendStatus(res, 405, "Method not allowed");
@@ -167,6 +173,8 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       return;
     }
 
-    void staticHandler.serve(req, res);
+    // Never let a static-serving failure become an unhandled rejection that
+    // takes down the process.
+    staticHandler.serve(req, res).catch(() => res.destroy());
   };
 }

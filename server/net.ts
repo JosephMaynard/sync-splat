@@ -2,7 +2,7 @@ import os from "node:os";
 
 /** Package version. Hardcoded because esbuild bundling makes reading
  *  package.json at runtime unreliable. Keep in sync with package.json. */
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 /** All non-internal IPv4 URLs the server is reachable on for a given port. */
 export function getLanUrls(port: number): string[] {

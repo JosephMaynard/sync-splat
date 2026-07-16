@@ -295,3 +295,40 @@ describe("static serving", () => {
     expect(spa.status).toBe(404);
   });
 });
+
+describe("socket.io coexistence (regression: v0.1.0 polling crash)", () => {
+  it("does not double-respond to engine.io polling requests", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-test-"));
+    fs.writeFileSync(path.join(tmpDir, "index.html"), "<html>splat</html>");
+    await start({ clientDir: tmpDir });
+
+    // A raw engine.io polling handshake. The SPA fallback used to also
+    // respond to this extensionless path — the second writeHead threw
+    // ERR_HTTP_HEADERS_SENT as an unhandled rejection and killed the
+    // process the moment any browser connected.
+    const res = await rawGet("/socket.io/?EIO=4&transport=polling");
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("<html>");
+
+    // Let any latent unhandled rejection surface, then prove the server
+    // still answers.
+    await new Promise((r) => setTimeout(r, 100));
+    const info = await rawGet("/api/info");
+    expect(info.status).toBe(200);
+  });
+
+  it("connects and round-trips with default transports (polling first)", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-test-"));
+    fs.writeFileSync(path.join(tmpDir, "index.html"), "<html>splat</html>");
+    await start({ clientDir: tmpDir });
+
+    const socket = ioc(baseUrl, { forceNew: true }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const history = await new Promise<Item[]>((resolve, reject) => {
+      socket.on("connect_error", reject);
+      socket.on("history", resolve);
+    });
+    expect(Array.isArray(history)).toBe(true);
+    expect(socket.connected).toBe(true);
+  });
+});
