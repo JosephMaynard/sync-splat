@@ -63,6 +63,13 @@ export async function createSyncSplatServer(
 ): Promise<SyncSplatServer> {
   const host = opts.host ?? "0.0.0.0";
   const maxFileBytes = opts.maxFileBytes ?? LIMITS.maxFileBytes;
+  if (!Number.isSafeInteger(maxFileBytes) || maxFileBytes <= 0) {
+    // NaN would silently disable the size cap entirely (every comparison
+    // against it is false); negatives would reject every upload.
+    throw new Error(
+      "max file size must be a positive integer number of bytes",
+    );
+  }
   if (maxFileBytes > LIMITS.maxTotalFileBytes) {
     // A single file larger than total storage would be accepted, immediately
     // evict itself, and 201 with an undownloadable id. Refuse up front.

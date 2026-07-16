@@ -159,8 +159,10 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       // Cross-site "simple" POSTs execute even without CORS headers — CORS
       // only blocks reading the response. Reject writes from other origins.
       if (!isAllowedOrigin(req.headers.origin, req.headers.host)) {
+        // As with rejectTooLarge: destroy only after the response flushes,
+        // so the client sees the 403 rather than a reset connection.
+        res.once("finish", () => req.destroy());
         sendStatus(res, 403, "Cross-origin requests are not allowed");
-        req.destroy();
         return;
       }
       handleUpload(req, res, url.searchParams);

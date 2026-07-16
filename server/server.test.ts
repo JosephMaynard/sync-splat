@@ -408,4 +408,20 @@ describe("configuration limits", () => {
       }),
     ).rejects.toThrow(/total storage cap/);
   });
+
+  it.each([
+    ["NaN (would disable the cap entirely)", NaN],
+    ["negative", -1],
+    ["zero", 0],
+    ["fractional", 1.5],
+    ["unsafe integer", 2 ** 53],
+  ])("refuses an invalid max file size: %s", async (_label, value) => {
+    await expect(
+      createSyncSplatServer({
+        port: 0,
+        host: "127.0.0.1",
+        maxFileBytes: value,
+      }),
+    ).rejects.toThrow(/positive integer/);
+  });
 });
