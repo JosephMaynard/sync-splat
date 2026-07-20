@@ -194,7 +194,10 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     }
 
     // Never let a static-serving failure become an unhandled rejection that
-    // takes down the process.
-    staticHandler.serve(req, res).catch(() => res.destroy());
+    // takes down the process. sendStatus destroys the response if headers
+    // were already sent, and returns a clean 500 otherwise.
+    staticHandler.serve(req, res).catch(() => {
+      sendStatus(res, 500, "Internal server error");
+    });
   };
 }
