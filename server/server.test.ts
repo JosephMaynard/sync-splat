@@ -425,3 +425,52 @@ describe("configuration limits", () => {
     ).rejects.toThrow(/positive integer/);
   });
 });
+
+describe("origin validation is rebinding-resistant", () => {
+  it("rejects uploads where Origin and Host agree on a foreign domain", async () => {
+    await start();
+    // DNS rebinding scenario: the attacker's domain resolves to this
+    // machine, so the browser sends Origin AND Host for evil.example.
+    // The old Host-anchored check passed this; the allowlist must not.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/api/upload?name=rebind.txt",
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain",
+            Origin: `http://evil.example:${port}`,
+            Host: `evil.example:${port}`,
+          },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.end("payload");
+    });
+    expect(status).toBe(403);
+  });
+
+  it("rejects socket handshakes where Origin and Host agree on a foreign domain", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: {
+        Origin: `http://evil.example:${port}`,
+        Host: `evil.example:${port}`,
+      },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const failed = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(false));
+      socket.on("connect_error", () => resolve(true));
+    });
+    expect(failed).toBe(true);
+  });
+});

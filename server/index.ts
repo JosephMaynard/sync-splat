@@ -11,7 +11,7 @@ import { HistoryStore } from "./store";
 import { createStaticHandler } from "./static";
 import { createRequestHandler } from "./http";
 import { registerSocketHandlers, type SyncSplatIO } from "./socket";
-import { VERSION, getLanUrls } from "./net";
+import { VERSION, getAllowedHostnames, getLanUrls } from "./net";
 import { isAllowedOrigin } from "./util";
 import { printBanner } from "./banner";
 
@@ -90,11 +90,13 @@ export async function createSyncSplatServer(
     // Same-origin in prod (server serves the client); Vite proxy in dev.
     // No CORS configuration by design.
     serveClient: false,
-    // WebSocket handshakes are not subject to CORS, so enforce same-origin
-    // ourselves: a hostile web page cannot omit or spoof its Origin header,
-    // while CLI/native clients (which send none) remain able to connect.
+    // WebSocket handshakes are not subject to CORS, so enforce the origin
+    // ourselves: the Origin's hostname must be one of this machine's own
+    // addresses (never the spoofable Host header — DNS rebinding can make
+    // Origin and Host agree on an attacker domain). CLI/native clients,
+    // which send no Origin, remain able to connect.
     allowRequest: (req, callback) => {
-      callback(null, isAllowedOrigin(req.headers.origin, req.headers.host));
+      callback(null, isAllowedOrigin(req.headers.origin, getAllowedHostnames()));
     },
   });
 
@@ -112,6 +114,7 @@ export async function createSyncSplatServer(
     store,
     staticHandler,
     getUrls,
+    getAllowedHostnames,
     maxFileBytes,
     onItemCreated: (item: Item) => io.emit("item:new", item),
   });

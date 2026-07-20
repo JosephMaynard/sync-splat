@@ -20,6 +20,9 @@ export interface RequestHandlerOptions {
   staticHandler: StaticHandler;
   /** Resolved lazily so port 0 (ephemeral) works: only known after listen. */
   getUrls: () => string[];
+  /** Hostnames a browser Origin may carry; enumerated fresh per request so
+   *  interface changes (DHCP, Wi-Fi) are honoured. */
+  getAllowedHostnames: () => ReadonlySet<string>;
   maxFileBytes: number;
   /** Broadcast a freshly-created item to all connected clients. */
   onItemCreated: (item: Item) => void;
@@ -31,7 +34,14 @@ export type RequestHandler = (
 ) => void;
 
 export function createRequestHandler(opts: RequestHandlerOptions): RequestHandler {
-  const { store, staticHandler, getUrls, maxFileBytes, onItemCreated } = opts;
+  const {
+    store,
+    staticHandler,
+    getUrls,
+    getAllowedHostnames,
+    maxFileBytes,
+    onItemCreated,
+  } = opts;
 
   function handleInfo(res: ServerResponse): void {
     sendJson(res, 200, {
@@ -158,7 +168,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       }
       // Cross-site "simple" POSTs execute even without CORS headers — CORS
       // only blocks reading the response. Reject writes from other origins.
-      if (!isAllowedOrigin(req.headers.origin, req.headers.host)) {
+      if (!isAllowedOrigin(req.headers.origin, getAllowedHostnames())) {
         // As with rejectTooLarge: destroy only after the response flushes,
         // so the client sees the 403 rather than a reset connection.
         res.once("finish", () => req.destroy());

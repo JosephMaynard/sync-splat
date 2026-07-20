@@ -4,6 +4,24 @@ import os from "node:os";
  *  package.json at runtime unreliable. Keep in sync with package.json. */
 export const VERSION = "0.1.1";
 
+/**
+ * Hostnames a browser Origin may legitimately carry when talking to this
+ * machine: localhost variants plus every interface address, enumerated fresh
+ * on each call so DHCP/Wi-Fi changes are picked up. The request's Host
+ * header is deliberately NOT used as a trust anchor — DNS rebinding lets an
+ * attacker make Origin and Host agree on a hostname they control, but it can
+ * never make the Origin's hostname be one of this machine's own addresses.
+ */
+export function getAllowedHostnames(): Set<string> {
+  const allowed = new Set<string>(["localhost", "127.0.0.1", "::1"]);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const iface of list ?? []) {
+      allowed.add(iface.address.toLowerCase());
+    }
+  }
+  return allowed;
+}
+
 /** All non-internal IPv4 URLs the server is reachable on for a given port. */
 export function getLanUrls(port: number): string[] {
   const urls: string[] = [];

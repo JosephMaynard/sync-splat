@@ -2,21 +2,27 @@ import type { ServerResponse } from "node:http";
 import { INLINE_IMAGE_MIMES } from "../shared/types";
 
 /**
- * Same-origin check for browser-initiated requests. Requests without an
- * Origin header (curl, CLI tools, same-origin navigations) are allowed.
- * When a browser sends one — which it does for cross-site POSTs and every
- * WebSocket handshake — its host must match the request's Host header.
- * Neither CORS absence nor the browser blocks those writes on its own.
+ * Origin check for browser-initiated requests. Requests without an Origin
+ * header (curl, CLI tools, same-origin navigations) are allowed. When a
+ * browser sends one — which it does for cross-site POSTs and every WebSocket
+ * handshake — the Origin's hostname must be one of the machine's own
+ * addresses (see getAllowedHostnames). The request's Host header is not
+ * consulted: DNS rebinding can make Origin and Host agree on an attacker
+ * hostname, so it is not a trust anchor. The port is deliberately ignored so
+ * the Vite dev server's origin (localhost:5173) stays valid.
  */
 export function isAllowedOrigin(
   origin: string | string[] | undefined,
-  host: string | undefined,
+  allowedHostnames: ReadonlySet<string>,
 ): boolean {
   if (origin === undefined) return true;
   const value = Array.isArray(origin) ? origin[0] : origin;
-  if (!value || !host) return false;
+  if (!value) return false;
   try {
-    return new URL(value).host === host;
+    const hostname = new URL(value).hostname
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "");
+    return allowedHostnames.has(hostname);
   } catch {
     // Includes the literal "null" origin (sandboxed iframes, file://).
     return false;

@@ -194,34 +194,40 @@ describe("double-response guards", () => {
 });
 
 describe("isAllowedOrigin", () => {
+  const HOSTS: ReadonlySet<string> = new Set([
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "192.168.1.5",
+  ]);
+
   it("allows requests without an Origin header", () => {
-    expect(isAllowedOrigin(undefined, "192.168.1.5:3011")).toBe(true);
+    expect(isAllowedOrigin(undefined, HOSTS)).toBe(true);
   });
 
-  it("allows a matching origin", () => {
-    expect(
-      isAllowedOrigin("http://192.168.1.5:3011", "192.168.1.5:3011"),
-    ).toBe(true);
+  it("allows origins whose hostname is one of the machine's addresses", () => {
+    expect(isAllowedOrigin("http://192.168.1.5:3011", HOSTS)).toBe(true);
+    expect(isAllowedOrigin("http://localhost:3011", HOSTS)).toBe(true);
   });
 
-  it("rejects a foreign origin", () => {
-    expect(isAllowedOrigin("http://evil.example", "192.168.1.5:3011")).toBe(
-      false,
-    );
+  it("allows any port on an allowed hostname (Vite dev server)", () => {
+    expect(isAllowedOrigin("http://localhost:5173", HOSTS)).toBe(true);
+    expect(isAllowedOrigin("http://192.168.1.5:5173", HOSTS)).toBe(true);
   });
 
-  it("rejects a host mismatch on port alone", () => {
-    expect(
-      isAllowedOrigin("http://192.168.1.5:4000", "192.168.1.5:3011"),
-    ).toBe(false);
+  it("rejects a foreign origin regardless of the Host header (rebinding)", () => {
+    // With DNS rebinding, Origin and Host can agree on the attacker's
+    // domain — the hostname allowlist must reject it anyway.
+    expect(isAllowedOrigin("http://evil.example:3011", HOSTS)).toBe(false);
+    expect(isAllowedOrigin("http://evil.example", HOSTS)).toBe(false);
+  });
+
+  it("matches IPv6 loopback with brackets stripped", () => {
+    expect(isAllowedOrigin("http://[::1]:3011", HOSTS)).toBe(true);
   });
 
   it("rejects the literal null origin and garbage", () => {
-    expect(isAllowedOrigin("null", "192.168.1.5:3011")).toBe(false);
-    expect(isAllowedOrigin("not a url", "192.168.1.5:3011")).toBe(false);
-  });
-
-  it("rejects an origin when the Host header is missing", () => {
-    expect(isAllowedOrigin("http://192.168.1.5:3011", undefined)).toBe(false);
+    expect(isAllowedOrigin("null", HOSTS)).toBe(false);
+    expect(isAllowedOrigin("not a url", HOSTS)).toBe(false);
   });
 });
