@@ -1,6 +1,34 @@
 import type { ServerResponse } from "node:http";
 import { INLINE_IMAGE_MIMES } from "../shared/types";
 
+/**
+ * Origin check for browser-initiated requests. Requests without an Origin
+ * header (curl, CLI tools, same-origin navigations) are allowed. When a
+ * browser sends one — which it does for cross-site POSTs and every WebSocket
+ * handshake — the Origin's hostname must be one of the machine's own
+ * addresses (see getAllowedHostnames). The request's Host header is not
+ * consulted: DNS rebinding can make Origin and Host agree on an attacker
+ * hostname, so it is not a trust anchor. The port is deliberately ignored so
+ * the Vite dev server's origin (localhost:5173) stays valid.
+ */
+export function isAllowedOrigin(
+  origin: string | string[] | undefined,
+  allowedHostnames: ReadonlySet<string>,
+): boolean {
+  if (origin === undefined) return true;
+  const value = Array.isArray(origin) ? origin[0] : origin;
+  if (!value) return false;
+  try {
+    const hostname = new URL(value).hostname
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "");
+    return allowedHostnames.has(hostname);
+  } catch {
+    // Includes the literal "null" origin (sandboxed iframes, file://).
+    return false;
+  }
+}
+
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -110,6 +138,10 @@ export function sendJson(
   status: number,
   body: unknown,
 ): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -123,6 +155,10 @@ export function sendStatus(
   status: number,
   message = "",
 ): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(message || `${status}`);
 }

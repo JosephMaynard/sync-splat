@@ -8,6 +8,7 @@ import {
   UUID_RE,
   asciiFallbackName,
   encodeRFC5987,
+  isAllowedOrigin,
   isInlineImage,
   sanitizeFilename,
   sendJson,
@@ -19,6 +20,9 @@ export interface RequestHandlerOptions {
   staticHandler: StaticHandler;
   /** Resolved lazily so port 0 (ephemeral) works: only known after listen. */
   getUrls: () => string[];
+  /** Hostnames a browser Origin may carry; enumerated fresh per request so
+   *  interface changes (DHCP, Wi-Fi) are honoured. */
+  getAllowedHostnames: () => ReadonlySet<string>;
   maxFileBytes: number;
   /** Broadcast a freshly-created item to all connected clients. */
   onItemCreated: (item: Item) => void;
@@ -30,7 +34,14 @@ export type RequestHandler = (
 ) => void;
 
 export function createRequestHandler(opts: RequestHandlerOptions): RequestHandler {
-  const { store, staticHandler, getUrls, maxFileBytes, onItemCreated } = opts;
+  const {
+    store,
+    staticHandler,
+    getUrls,
+    getAllowedHostnames,
+    maxFileBytes,
+    onItemCreated,
+  } = opts;
 
   function handleInfo(res: ServerResponse): void {
     sendJson(res, 200, {
@@ -135,6 +146,12 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     }
     const pathname = url.pathname;
 
+    // socket.io's engine responds to its own paths; it attached to the server
+    // before this handler, so both see every request. Never double-respond.
+    if (pathname === "/socket.io" || pathname.startsWith("/socket.io/")) {
+      return;
+    }
+
     if (pathname === "/api/info") {
       if (req.method !== "GET") {
         sendStatus(res, 405, "Method not allowed");
@@ -147,6 +164,15 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     if (pathname === "/api/upload") {
       if (req.method !== "POST") {
         sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      // Cross-site "simple" POSTs execute even without CORS headers — CORS
+      // only blocks reading the response. Reject writes from other origins.
+      if (!isAllowedOrigin(req.headers.origin, getAllowedHostnames())) {
+        // As with rejectTooLarge: destroy only after the response flushes,
+        // so the client sees the 403 rather than a reset connection.
+        res.once("finish", () => req.destroy());
+        sendStatus(res, 403, "Cross-origin requests are not allowed");
         return;
       }
       handleUpload(req, res, url.searchParams);
@@ -167,6 +193,11 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       return;
     }
 
-    void staticHandler.serve(req, res);
+    // Never let a static-serving failure become an unhandled rejection that
+    // takes down the process. sendStatus destroys the response if headers
+    // were already sent, and returns a clean 500 otherwise.
+    staticHandler.serve(req, res).catch(() => {
+      sendStatus(res, 500, "Internal server error");
+    });
   };
 }

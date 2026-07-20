@@ -295,3 +295,182 @@ describe("static serving", () => {
     expect(spa.status).toBe(404);
   });
 });
+
+describe("socket.io coexistence (regression: v0.1.0 polling crash)", () => {
+  it("does not double-respond to engine.io polling requests", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-test-"));
+    fs.writeFileSync(path.join(tmpDir, "index.html"), "<html>splat</html>");
+    await start({ clientDir: tmpDir });
+
+    // A raw engine.io polling handshake. The SPA fallback used to also
+    // respond to this extensionless path — the second writeHead threw
+    // ERR_HTTP_HEADERS_SENT as an unhandled rejection and killed the
+    // process the moment any browser connected.
+    const res = await rawGet("/socket.io/?EIO=4&transport=polling");
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("<html>");
+
+    // Let any latent unhandled rejection surface, then prove the server
+    // still answers.
+    await new Promise((r) => setTimeout(r, 100));
+    const info = await rawGet("/api/info");
+    expect(info.status).toBe(200);
+  });
+
+  it("connects and round-trips with default transports (polling first)", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-test-"));
+    fs.writeFileSync(path.join(tmpDir, "index.html"), "<html>splat</html>");
+    await start({ clientDir: tmpDir });
+
+    const socket = ioc(baseUrl, { forceNew: true }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const history = await new Promise<Item[]>((resolve, reject) => {
+      socket.on("connect_error", reject);
+      socket.on("history", resolve);
+    });
+    expect(Array.isArray(history)).toBe(true);
+    expect(socket.connected).toBe(true);
+  });
+});
+
+describe("origin validation", () => {
+  it("rejects cross-origin uploads with 403", async () => {
+    await start();
+    const res = await fetch(`${baseUrl}/api/upload?name=evil.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: "http://evil.example",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("accepts same-origin uploads and no-Origin (CLI) uploads", async () => {
+    await start();
+    const sameOrigin = await fetch(`${baseUrl}/api/upload?name=ok.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: `http://127.0.0.1:${port}`,
+      },
+    });
+    expect(sameOrigin.status).toBe(201);
+
+    const noOrigin = await fetch(`${baseUrl}/api/upload?name=cli.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: { "Content-Type": "text/plain" },
+    });
+    expect(noOrigin.status).toBe(201);
+  });
+
+  it("rejects socket handshakes from a foreign origin", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: { Origin: "http://evil.example" },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const failed = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(false));
+      socket.on("connect_error", () => resolve(true));
+    });
+    expect(failed).toBe(true);
+  });
+
+  it("accepts socket handshakes with a matching origin", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: { Origin: `http://127.0.0.1:${port}` },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const ok = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(true));
+      socket.on("connect_error", () => resolve(false));
+    });
+    expect(ok).toBe(true);
+  });
+});
+
+describe("configuration limits", () => {
+  it("refuses a max file size above the total storage cap", async () => {
+    await expect(
+      createSyncSplatServer({
+        port: 0,
+        host: "127.0.0.1",
+        maxFileBytes: 201 * 1024 * 1024,
+      }),
+    ).rejects.toThrow(/total storage cap/);
+  });
+
+  it.each([
+    ["NaN (would disable the cap entirely)", NaN],
+    ["negative", -1],
+    ["zero", 0],
+    ["fractional", 1.5],
+    ["unsafe integer", 2 ** 53],
+  ])("refuses an invalid max file size: %s", async (_label, value) => {
+    await expect(
+      createSyncSplatServer({
+        port: 0,
+        host: "127.0.0.1",
+        maxFileBytes: value,
+      }),
+    ).rejects.toThrow(/positive integer/);
+  });
+});
+
+describe("origin validation is rebinding-resistant", () => {
+  it("rejects uploads where Origin and Host agree on a foreign domain", async () => {
+    await start();
+    // DNS rebinding scenario: the attacker's domain resolves to this
+    // machine, so the browser sends Origin AND Host for evil.example.
+    // The old Host-anchored check passed this; the allowlist must not.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/api/upload?name=rebind.txt",
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain",
+            Origin: `http://evil.example:${port}`,
+            Host: `evil.example:${port}`,
+          },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.end("payload");
+    });
+    expect(status).toBe(403);
+  });
+
+  it("rejects socket handshakes where Origin and Host agree on a foreign domain", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: {
+        Origin: `http://evil.example:${port}`,
+        Host: `evil.example:${port}`,
+      },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const failed = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(false));
+      socket.on("connect_error", () => resolve(true));
+    });
+    expect(failed).toBe(true);
+  });
+});

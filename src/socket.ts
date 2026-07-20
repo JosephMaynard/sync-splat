@@ -7,7 +7,13 @@ import type {
 /**
  * Same-origin socket. In production the server serves the client, so `io()`
  * with no URL connects back to the origin. In dev, Vite proxies `/socket.io`.
+ *
+ * autoConnect is off: the server emits `history` once, immediately on
+ * connection, so listeners must be registered BEFORE connecting or a fast
+ * handshake can win the race against React's effects and the history (and
+ * the `connect` event itself) is silently missed. App calls socket.connect()
+ * after wiring its listeners.
  */
 export const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({
-  autoConnect: true,
+  autoConnect: false,
 });

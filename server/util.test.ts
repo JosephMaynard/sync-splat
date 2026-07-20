@@ -3,8 +3,11 @@ import {
   asciiFallbackName,
   encodeRFC5987,
   extname,
+  isAllowedOrigin,
   mimeForPath,
   sanitizeFilename,
+  sendJson,
+  sendStatus,
 } from "./util";
 
 describe("sanitizeFilename", () => {
@@ -155,5 +158,76 @@ describe("mimeForPath", () => {
 
   it("falls back to octet-stream when there is no extension", () => {
     expect(mimeForPath("Makefile")).toBe("application/octet-stream");
+  });
+});
+
+describe("double-response guards", () => {
+  function fakeRes() {
+    return {
+      headersSent: true,
+      destroyed: false,
+      destroy() {
+        this.destroyed = true;
+      },
+      writeHead() {
+        throw new Error("writeHead must not be called after headers sent");
+      },
+      end() {},
+    };
+  }
+
+  it("sendStatus destroys instead of throwing when headers already sent", () => {
+    const res = fakeRes();
+    expect(() =>
+      sendStatus(res as unknown as Parameters<typeof sendStatus>[0], 404),
+    ).not.toThrow();
+    expect(res.destroyed).toBe(true);
+  });
+
+  it("sendJson destroys instead of throwing when headers already sent", () => {
+    const res = fakeRes();
+    expect(() =>
+      sendJson(res as unknown as Parameters<typeof sendJson>[0], 200, {}),
+    ).not.toThrow();
+    expect(res.destroyed).toBe(true);
+  });
+});
+
+describe("isAllowedOrigin", () => {
+  const HOSTS: ReadonlySet<string> = new Set([
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "192.168.1.5",
+  ]);
+
+  it("allows requests without an Origin header", () => {
+    expect(isAllowedOrigin(undefined, HOSTS)).toBe(true);
+  });
+
+  it("allows origins whose hostname is one of the machine's addresses", () => {
+    expect(isAllowedOrigin("http://192.168.1.5:3011", HOSTS)).toBe(true);
+    expect(isAllowedOrigin("http://localhost:3011", HOSTS)).toBe(true);
+  });
+
+  it("allows any port on an allowed hostname (Vite dev server)", () => {
+    expect(isAllowedOrigin("http://localhost:5173", HOSTS)).toBe(true);
+    expect(isAllowedOrigin("http://192.168.1.5:5173", HOSTS)).toBe(true);
+  });
+
+  it("rejects a foreign origin regardless of the Host header (rebinding)", () => {
+    // With DNS rebinding, Origin and Host can agree on the attacker's
+    // domain — the hostname allowlist must reject it anyway.
+    expect(isAllowedOrigin("http://evil.example:3011", HOSTS)).toBe(false);
+    expect(isAllowedOrigin("http://evil.example", HOSTS)).toBe(false);
+  });
+
+  it("matches IPv6 loopback with brackets stripped", () => {
+    expect(isAllowedOrigin("http://[::1]:3011", HOSTS)).toBe(true);
+  });
+
+  it("rejects the literal null origin and garbage", () => {
+    expect(isAllowedOrigin("null", HOSTS)).toBe(false);
+    expect(isAllowedOrigin("not a url", HOSTS)).toBe(false);
   });
 });

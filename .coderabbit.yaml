@@ -1,0 +1,9 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/reference/yaml-template
+reviews:
+  tools:
+    # CodeRabbit's sandbox times out installing this project's devDependencies
+    # to run its own ESLint pass. Our GitHub Actions CI already runs
+    # `pnpm lint` (ESLint) on every PR on Node 20 and 22, so the in-review
+    # duplicate adds nothing.
+    eslint:
+      enabled: false

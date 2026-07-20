@@ -42,6 +42,7 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [maxFileBytes, setMaxFileBytes] = useState(LIMITS.maxFileBytes);
+  const [maxTextBytes, setMaxTextBytes] = useState(LIMITS.maxTextBytes);
   const [theme, setThemeState] = useState<Theme>(getTheme);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
@@ -85,12 +86,20 @@ export default function App() {
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
 
+    // Connect only after every listener is wired: the server emits `history`
+    // the moment the connection lands, and events with no listener are lost.
+    // (autoConnect is off, so the socket cannot already be connected here.)
+    socket.connect();
+
     return () => {
       socket.off("history", onHistory);
       socket.off("item:new", onNew);
       socket.off("item:deleted", onDeleted);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
+      // Disconnect so a remount (StrictMode, HMR) reconnects fresh and
+      // receives a new history snapshot instead of a listenerless socket.
+      socket.disconnect();
     };
   }, []);
 
@@ -100,7 +109,10 @@ export default function App() {
     fetch("/api/info")
       .then((r) => (r.ok ? r.json() : null))
       .then((info: ServerInfo | null) => {
-        if (!cancelled && info) setMaxFileBytes(info.maxFileBytes);
+        if (!cancelled && info) {
+          setMaxFileBytes(info.maxFileBytes);
+          setMaxTextBytes(info.maxTextBytes);
+        }
       })
       .catch(() => {});
     return () => {
@@ -323,6 +335,7 @@ export default function App() {
             connected={connected}
             sending={sending}
             attachments={attachments}
+            maxTextBytes={maxTextBytes}
             onBroadcast={broadcast}
             onRemoveAttachment={removeAttachment}
           />

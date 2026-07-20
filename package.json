@@ -1,6 +1,6 @@
 {
   "name": "sync-splat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Share text and small files between devices on your local network. Run it, scan the QR code, splat.",
   "type": "module",
   "license": "MIT",
