@@ -13,6 +13,7 @@ import { LIMITS } from "../shared/types";
 import HistoryItem from "./HistoryItem";
 import Compose from "./Compose";
 import QrModal from "./QrModal";
+import ShareBrowser from "./ShareBrowser";
 import Logo from "./Logo";
 import { humanSize } from "./util";
 
@@ -43,6 +44,8 @@ export default function App() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [maxFileBytes, setMaxFileBytes] = useState(LIMITS.maxFileBytes);
   const [maxTextBytes, setMaxTextBytes] = useState(LIMITS.maxTextBytes);
+  const [share, setShare] = useState<ServerInfo["share"]>(null);
+  const [tab, setTab] = useState<"splats" | "files">("splats");
   const [theme, setThemeState] = useState<Theme>(getTheme);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
@@ -112,6 +115,7 @@ export default function App() {
         if (!cancelled && info) {
           setMaxFileBytes(info.maxFileBytes);
           setMaxTextBytes(info.maxTextBytes);
+          setShare(info.share);
         }
       })
       .catch(() => {});
@@ -371,21 +375,75 @@ export default function App() {
           </div>
         </section>
 
-        {/* history column */}
+        {/* splats / files column */}
         <section className="flex min-h-0 flex-col">
-          <h2 className="mb-3 text-sm font-medium text-gray-600 dark:text-gray-400">
-            History
-          </h2>
-          {history.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-500">
-              Nothing shared yet. Broadcast some text or share a file to get
-              started.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {history.map((item) => (
-                <HistoryItem key={item.id} item={item} onDelete={deleteItem} />
+          {share ? (
+            <div
+              role="tablist"
+              aria-label="Splats and files"
+              className="mb-3 inline-flex self-start rounded-lg border border-gray-200 bg-gray-100 p-0.5 dark:border-gray-800 dark:bg-gray-800/50"
+            >
+              {(["splats", "files"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  id={`tab-${t}`}
+                  aria-selected={tab === t}
+                  aria-controls={`panel-${t}`}
+                  onClick={() => setTab(t)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
+                    tab === t
+                      ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100"
+                      : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  }`}
+                >
+                  {t}
+                </button>
               ))}
+            </div>
+          ) : (
+            <h2 className="mb-3 text-sm font-medium text-gray-600 dark:text-gray-400">
+              Splats
+            </h2>
+          )}
+
+          {(!share || tab === "splats") && (
+            <div
+              id="panel-splats"
+              role={share ? "tabpanel" : undefined}
+              aria-labelledby={share ? "tab-splats" : undefined}
+            >
+              {history.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-500">
+                  Nothing splatted yet. Broadcast some text or share a file to
+                  get started.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {history.map((item) => (
+                    <HistoryItem
+                      key={item.id}
+                      item={item}
+                      onDelete={deleteItem}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {share && tab === "files" && (
+            <div
+              id="panel-files"
+              role="tabpanel"
+              aria-labelledby="tab-files"
+              className="flex min-h-0 flex-col"
+            >
+              <ShareBrowser
+                shareName={share.name}
+                maxFileBytes={maxFileBytes}
+              />
             </div>
           )}
         </section>

@@ -4,7 +4,11 @@ import { VERSION } from "./net";
 export interface BannerInfo {
   port: number;
   urls: string[];
+  /** Stable mDNS URL (http://<hostname>.local:<port>), or null if unavailable. */
+  mdnsUrl: string | null;
   hasClient: boolean;
+  /** Absolute path of the shared folder, or null when sharing is disabled. */
+  shareDir: string | null;
 }
 
 /**
@@ -28,7 +32,7 @@ export function clickable(url: string): string {
  * wrapped in try/catch because encodeQR throws on payloads over its capacity.
  */
 export function printBanner(info: BannerInfo): void {
-  const { port, urls, hasClient } = info;
+  const { port, urls, mdnsUrl, hasClient, shareDir } = info;
   const lines: string[] = [
     "",
     `  sync-splat v${VERSION}`,
@@ -41,6 +45,15 @@ export function printBanner(info: BannerInfo): void {
   }
   if (urls.length === 0) {
     lines.push("  Network:  (no LAN interface detected)");
+  }
+  if (mdnsUrl) {
+    lines.push(`  Stable:   ${clickable(mdnsUrl)}`);
+  }
+  if (shareDir) {
+    lines.push(
+      `  Sharing:  ${shareDir}   ` +
+        "(browse/upload from any device — disable with --no-share)",
+    );
   }
   lines.push("");
   if (!hasClient) {

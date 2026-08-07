@@ -1,9 +1,11 @@
+import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FileItem, Item } from "../shared/types";
 import { LIMITS } from "../shared/types";
 import type { HistoryStore } from "./store";
 import type { StaticHandler } from "./static";
 import { VERSION } from "./net";
+import { handleShareDl, handleShareLs, handleShareUpload } from "./share";
 import {
   UUID_RE,
   asciiFallbackName,
@@ -26,6 +28,14 @@ export interface RequestHandlerOptions {
   maxFileBytes: number;
   /** Broadcast a freshly-created item to all connected clients. */
   onItemCreated: (item: Item) => void;
+  /** Realpath'd root of the shared folder, or null when sharing is disabled
+   *  (all /api/share/* routes then 404). */
+  shareDir: string | null;
+  /** Stable mDNS URL for /api/info, or null when unavailable. */
+  getMdnsUrl: () => string | null;
+  /** Reprint the startup banner + QR with fresh URLs. Only wired when the
+   *  server was started with banner:true; otherwise undefined (a no-op). */
+  onNetworkRefresh?: () => void;
 }
 
 export type RequestHandler = (
@@ -41,6 +51,9 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     getAllowedHostnames,
     maxFileBytes,
     onItemCreated,
+    shareDir,
+    getMdnsUrl,
+    onNetworkRefresh,
   } = opts;
 
   function handleInfo(res: ServerResponse): void {
@@ -48,6 +61,8 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       name: "sync-splat",
       version: VERSION,
       urls: getUrls(),
+      mdnsUrl: getMdnsUrl(),
+      share: shareDir ? { name: path.basename(shareDir) } : null,
       maxFileBytes,
       maxTextBytes: LIMITS.maxTextBytes,
     });
@@ -176,6 +191,79 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         return;
       }
       handleUpload(req, res, url.searchParams);
+      return;
+    }
+
+    if (pathname === "/api/network/refresh") {
+      if (req.method !== "POST") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      if (!isAllowedOrigin(req.headers.origin, getAllowedHostnames())) {
+        res.once("finish", () => req.destroy());
+        sendStatus(res, 403, "Cross-origin requests are not allowed");
+        return;
+      }
+      // Reprint the banner (fresh URLs re-enumerated inside) when running with
+      // a banner, then answer with the same payload as /api/info.
+      onNetworkRefresh?.();
+      handleInfo(res);
+      return;
+    }
+
+    if (pathname === "/api/share/ls") {
+      if (shareDir === null) {
+        sendStatus(res, 404, "Not found");
+        return;
+      }
+      if (req.method !== "GET") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      void handleShareLs(res, shareDir, url.searchParams.get("path") ?? "");
+      return;
+    }
+
+    if (pathname === "/api/share/dl") {
+      if (shareDir === null) {
+        sendStatus(res, 404, "Not found");
+        return;
+      }
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      handleShareDl(
+        res,
+        shareDir,
+        url.searchParams.get("path") ?? "",
+        req.method === "HEAD",
+      );
+      return;
+    }
+
+    if (pathname === "/api/share/upload") {
+      if (shareDir === null) {
+        sendStatus(res, 404, "Not found");
+        return;
+      }
+      if (req.method !== "POST") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      if (!isAllowedOrigin(req.headers.origin, getAllowedHostnames())) {
+        res.once("finish", () => req.destroy());
+        sendStatus(res, 403, "Cross-origin requests are not allowed");
+        return;
+      }
+      void handleShareUpload(
+        req,
+        res,
+        shareDir,
+        url.searchParams.get("dir") ?? "",
+        url.searchParams.get("name") ?? "",
+        maxFileBytes,
+      );
       return;
     }
 

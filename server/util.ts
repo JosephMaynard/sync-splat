@@ -47,6 +47,7 @@ export const MIME_BY_EXT: Record<string, string> = {
   jpeg: "image/jpeg",
   gif: "image/gif",
   webp: "image/webp",
+  avif: "image/avif",
   ico: "image/x-icon",
   json: "application/json; charset=utf-8",
   map: "application/json; charset=utf-8",

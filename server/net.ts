@@ -2,7 +2,7 @@ import os from "node:os";
 
 /** Package version. Hardcoded because esbuild bundling makes reading
  *  package.json at runtime unreliable. Keep in sync with package.json. */
-export const VERSION = "0.1.1";
+export const VERSION = "0.2.0";
 
 /**
  * Hostnames a browser Origin may legitimately carry when talking to this
@@ -20,6 +20,19 @@ export function getAllowedHostnames(): Set<string> {
     }
   }
   return allowed;
+}
+
+/**
+ * Stable mDNS URL for this machine: `http://<hostname>.local:<port>`. On
+ * networks with an mDNS responder (macOS/iOS and most modern systems) this
+ * name resolves regardless of the current DHCP-assigned IP, so it survives
+ * Wi-Fi changes. Returns null when the hostname is empty.
+ */
+export function getMdnsUrl(port: number): string | null {
+  let host = os.hostname().toLowerCase();
+  if (!host) return null;
+  if (!host.endsWith(".local")) host += ".local";
+  return `http://${host}:${port}`;
 }
 
 /** All non-internal IPv4 URLs the server is reachable on for a given port. */

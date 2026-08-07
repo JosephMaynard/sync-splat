@@ -25,8 +25,28 @@ export interface ServerInfo {
   version: string;
   /** All LAN URLs the server is reachable on, e.g. "http://192.168.1.23:3011". */
   urls: string[];
+  /** mDNS URL (http://<hostname>.local:<port>) — survives Wi-Fi changes on
+   *  networks with an mDNS responder (macOS/iOS, most modern systems). */
+  mdnsUrl: string | null;
+  /** Folder sharing config; null when disabled via --no-share. */
+  share: { name: string } | null;
   maxFileBytes: number;
   maxTextBytes: number;
+}
+
+/** One entry in a shared-folder listing. */
+export interface ShareEntry {
+  name: string;
+  kind: "dir" | "file";
+  /** Bytes for files; 0 for directories. */
+  size: number;
+  mtimeMs: number;
+}
+
+/** GET /api/share/ls?path=<rel> response. `path` is "" for the root. */
+export interface ShareListing {
+  path: string;
+  entries: ShareEntry[];
 }
 
 export interface ServerToClientEvents {

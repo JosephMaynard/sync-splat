@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import DOMPurify from "dompurify";
-import { XMarkIcon } from "@heroicons/react/24/outline";
+import { XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { encodeQR, renderQRToSvg } from "../qr/src";
 import type { ServerInfo } from "../shared/types";
 
@@ -23,8 +23,11 @@ function pickUrl(urls: string[]): string | null {
 
 export default function QrModal({ onClose }: Props) {
   const [url, setUrl] = useState<string | null>(null);
+  const [mdnsUrl, setMdnsUrl] = useState<string | null>(null);
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   // Close on Escape.
   useEffect(() => {
@@ -35,6 +38,30 @@ export default function QrModal({ onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  /* Render the QR + URLs from a fresh ServerInfo payload. */
+  const applyInfo = useCallback((info: ServerInfo) => {
+    const chosen = pickUrl(info.urls);
+    setUrl(chosen);
+    setMdnsUrl(info.mdnsUrl);
+    if (!chosen) {
+      setError("No LAN address available.");
+      setSvg(null);
+      return;
+    }
+    setError(null);
+    try {
+      const matrix = encodeQR(chosen);
+      const rawSvg = renderQRToSvg(matrix, { dark: "#111827", light: "#ffffff" });
+      const clean = DOMPurify.sanitize(rawSvg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+      });
+      setSvg(clean);
+    } catch {
+      // encodeQR throws when the URL exceeds QR capacity — show text only.
+      setSvg(null);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -42,24 +69,7 @@ export default function QrModal({ onClose }: Props) {
         const res = await fetch("/api/info");
         if (!res.ok) throw new Error(`info ${res.status}`);
         const info: ServerInfo = await res.json();
-        const chosen = pickUrl(info.urls);
-        if (cancelled) return;
-        setUrl(chosen);
-        if (!chosen) {
-          setError("No LAN address available.");
-          return;
-        }
-        try {
-          const matrix = encodeQR(chosen);
-          const rawSvg = renderQRToSvg(matrix, { dark: "#111827", light: "#ffffff" });
-          const clean = DOMPurify.sanitize(rawSvg, {
-            USE_PROFILES: { svg: true, svgFilters: true },
-          });
-          if (!cancelled) setSvg(clean);
-        } catch {
-          // encodeQR throws when the URL exceeds QR capacity — show text only.
-          if (!cancelled) setSvg(null);
-        }
+        if (!cancelled) applyInfo(info);
       } catch {
         if (!cancelled) setError("Could not reach the server.");
       }
@@ -67,7 +77,24 @@ export default function QrModal({ onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyInfo]);
+
+  /* Re-enumerate the network after a Wi-Fi change and re-render from the
+   * response (also reprints the banner + QR in the terminal server-side). */
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      const res = await fetch("/api/network/refresh", { method: "POST" });
+      if (!res.ok) throw new Error(`refresh ${res.status}`);
+      const info: ServerInfo = await res.json();
+      applyInfo(info);
+    } catch {
+      setRefreshError("Couldn't refresh — is the server still running?");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [applyInfo]);
 
   return (
     <div
@@ -92,7 +119,9 @@ export default function QrModal({ onClose }: Props) {
         </h2>
 
         {error ? (
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {error}
+          </p>
         ) : (
           <div className="flex flex-col items-center gap-4">
             {svg ? (
@@ -108,15 +137,48 @@ export default function QrModal({ onClose }: Props) {
               </p>
             )}
             {url && (
-              <a
-                href={url}
-                className="break-all text-center text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-              >
-                {url}
-              </a>
+              <div className="flex flex-col items-center gap-1">
+                <a
+                  href={url}
+                  className="break-all text-center text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  {url}
+                </a>
+                {mdnsUrl && (
+                  <a
+                    href={mdnsUrl}
+                    className="break-all text-center text-xs text-gray-500 hover:underline dark:text-gray-400"
+                  >
+                    {mdnsUrl}
+                  </a>
+                )}
+              </div>
             )}
           </div>
         )}
+
+        <div className="mt-5 flex flex-col items-center gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            <ArrowPathIcon
+              className={`size-4 ${refreshing ? "animate-spin" : ""}`}
+              aria-hidden="true"
+            />
+            {refreshing ? "Refreshing…" : "Wi-Fi changed? Refresh"}
+          </button>
+          {refreshError && (
+            <p
+              role="alert"
+              className="text-center text-xs text-red-600 dark:text-red-400"
+            >
+              {refreshError}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
