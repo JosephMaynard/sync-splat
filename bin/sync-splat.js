@@ -36,6 +36,11 @@ function parseArgs(argv) {
     } else if (arg === "--no-share") {
       opts.share = null;
     } else if (arg === "--share") {
+      if (i + 1 >= argv.length) {
+        console.error("sync-splat: --share requires a folder path");
+        console.error("Run `sync-splat --help` for usage.");
+        process.exit(1);
+      }
       opts.share = argv[++i];
     } else if (arg.startsWith("--share=")) {
       opts.share = arg.slice("--share=".length);

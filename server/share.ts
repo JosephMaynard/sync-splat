@@ -5,9 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ShareEntry, ShareListing } from "../shared/types";
 import {
-  asciiFallbackName,
-  encodeRFC5987,
-  isInlineImage,
+  downloadHeaders,
   mimeForPath,
   sanitizeFilename,
   sendJson,
@@ -25,7 +23,10 @@ const NUL = String.fromCharCode(0);
  *
  * Rules: split on "/"; reject any segment that is empty, ".", "..", starts with
  * "." (dotfiles/dot-dirs never leak — .env and .git stay private), or contains a
- * backslash or NUL. Then resolve and prefix-check as belt-and-braces.
+ * backslash or NUL. Then resolve and prefix-check, and finally realpath the
+ * target: symlinks that stay inside the share tree keep working, but a symlink
+ * pointing outside the root (e.g. into $HOME) is rejected rather than followed.
+ * The root itself is realpath'd at startup by the caller.
  */
 export function resolveSharePath(root: string, rel: string): string | null {
   if (rel === "") return root;
@@ -38,7 +39,17 @@ export function resolveSharePath(root: string, rel: string): string | null {
   }
   const resolved = path.resolve(root, ...segments);
   if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
-  return resolved;
+
+  let real: string;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch {
+    // Nothing exists at the path (upload targets, soon-to-404 reads) — no
+    // symlink can be involved, so the logical path is safe to hand back.
+    return resolved;
+  }
+  if (real !== root && !real.startsWith(root + path.sep)) return null;
+  return real;
 }
 
 /**
@@ -72,23 +83,30 @@ export async function handleShareLs(
     return;
   }
 
-  const entries: ShareEntry[] = [];
-  for (const name of names) {
-    if (name.startsWith(".")) continue;
-    let st: fs.Stats;
-    try {
-      st = await fsp.stat(path.join(abs, name));
-    } catch {
-      // Broken symlink or a race with deletion — skip silently.
-      continue;
-    }
-    if (st.isDirectory()) {
-      entries.push({ name, kind: "dir", size: 0, mtimeMs: st.mtimeMs });
-    } else if (st.isFile()) {
-      entries.push({ name, kind: "file", size: st.size, mtimeMs: st.mtimeMs });
-    }
-    // Anything else (sockets, fifos, devices) is intentionally omitted.
-  }
+  // Stat concurrently — big directories (node_modules…) would crawl serially.
+  const stats = await Promise.all(
+    names.map(async (name): Promise<ShareEntry | null> => {
+      if (name.startsWith(".")) return null;
+      let st: fs.Stats;
+      try {
+        st = await fsp.stat(path.join(abs, name));
+      } catch {
+        // Broken symlink or a race with deletion — skip silently.
+        return null;
+      }
+      if (st.isDirectory()) {
+        return { name, kind: "dir", size: 0, mtimeMs: st.mtimeMs };
+      }
+      if (st.isFile()) {
+        return { name, kind: "file", size: st.size, mtimeMs: st.mtimeMs };
+      }
+      // Anything else (sockets, fifos, devices) is intentionally omitted.
+      return null;
+    }),
+  );
+  const entries: ShareEntry[] = stats.filter(
+    (e): e is ShareEntry => e !== null,
+  );
 
   entries.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
@@ -123,22 +141,11 @@ export function handleShareDl(
       return;
     }
 
-    const name = path.basename(abs);
-    const mime = mimeForPath(abs);
-    const headers: Record<string, string | number> = {
-      "X-Content-Type-Options": "nosniff",
-      "Content-Length": st.size,
-    };
-    if (isInlineImage(mime)) {
-      headers["Content-Type"] = mime;
-      headers["Content-Disposition"] = "inline";
-    } else {
-      headers["Content-Type"] = "application/octet-stream";
-      const fallback = asciiFallbackName(name);
-      headers["Content-Disposition"] =
-        `attachment; filename="${fallback}"; ` +
-        `filename*=UTF-8''${encodeRFC5987(name)}`;
-    }
+    const headers = downloadHeaders(
+      path.basename(abs),
+      mimeForPath(abs),
+      st.size,
+    );
 
     if (isHead) {
       res.writeHead(200, headers);
@@ -159,18 +166,40 @@ export function handleShareDl(
   });
 }
 
-/** Find a non-colliding name in `dir` by suffixing " (1)", " (2)", … before the
- *  extension. Never overwrites an existing entry. */
-function uniqueName(dir: string, name: string): string {
+/**
+ * Move `tmpPath` to a non-colliding name in `dir`, suffixing " (1)", " (2)", …
+ * before the extension. Uses hard-link creation, which fails with EEXIST
+ * instead of overwriting, so concurrent uploads of the same name can never
+ * clobber each other (a probe-then-rename flow could: fs.rename overwrites).
+ * Falls back to a plain rename on filesystems without hard links (FAT/exFAT),
+ * accepting the tiny race there. Resolves with the final name.
+ */
+async function placeUnique(
+  dir: string,
+  name: string,
+  tmpPath: string,
+): Promise<string> {
   const ext = path.extname(name);
   const base = name.slice(0, name.length - ext.length);
-  let candidate = name;
-  let n = 0;
-  while (fs.existsSync(path.join(dir, candidate))) {
-    n += 1;
-    candidate = `${base} (${n})${ext}`;
+  for (let n = 0; n < 10_000; n += 1) {
+    const candidate = n === 0 ? name : `${base} (${n})${ext}`;
+    const target = path.join(dir, candidate);
+    try {
+      await fsp.link(tmpPath, target);
+      await fsp.unlink(tmpPath);
+      return candidate;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") continue;
+      if (code === "EPERM" || code === "ENOTSUP" || code === "ENOSYS") {
+        // No hard-link support on this filesystem — best-effort rename.
+        await fsp.rename(tmpPath, target);
+        return candidate;
+      }
+      throw err;
+    }
   }
-  return candidate;
+  throw new Error("could not find a free file name");
 }
 
 /**
@@ -269,6 +298,8 @@ export async function handleShareUpload(
     }
   });
 
+  let bodyEnded = false;
+
   req.on("error", () => {
     finish(() => {
       out.destroy();
@@ -277,19 +308,28 @@ export async function handleShareUpload(
     });
   });
 
+  // A client that vanishes mid-upload emits "close" without "end" — tear down
+  // the write stream and remove the temp file instead of leaking both.
+  req.on("close", () => {
+    if (settled || bodyEnded) return;
+    finish(() => {
+      out.destroy();
+      cleanupTemp();
+      res.destroy();
+    });
+  });
+
   req.on("end", () => {
     if (settled) return;
+    bodyEnded = true;
     out.end(() => {
       finish(() => {
-        const finalName = uniqueName(dirAbs, name);
-        fs.rename(tmpPath, path.join(dirAbs, finalName), (err) => {
-          if (err) {
+        placeUnique(dirAbs, name, tmpPath)
+          .then((finalName) => sendJson(res, 201, { name: finalName }))
+          .catch(() => {
             cleanupTemp();
             if (!res.headersSent) sendStatus(res, 500, "Internal server error");
-            return;
-          }
-          sendJson(res, 201, { name: finalName });
-        });
+          });
       });
     });
   });

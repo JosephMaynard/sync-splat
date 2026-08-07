@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { encodeQR, renderQRToSvg } from "../qr/src";
@@ -28,6 +28,11 @@ export default function QrModal({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  // Monotonic request version: the initial /api/info fetch and any number of
+  // refresh clicks may race; only the most recently started request may
+  // update state, so a slow stale response can't overwrite a fresh one.
+  const requestVersion = useRef(0);
 
   // Close on Escape.
   useEffect(() => {
@@ -63,36 +68,42 @@ export default function QrModal({ onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const version = ++requestVersion.current;
     (async () => {
       try {
         const res = await fetch("/api/info");
         if (!res.ok) throw new Error(`info ${res.status}`);
         const info: ServerInfo = await res.json();
-        if (!cancelled) applyInfo(info);
+        if (requestVersion.current === version) applyInfo(info);
       } catch {
-        if (!cancelled) setError("Could not reach the server.");
+        if (requestVersion.current === version) {
+          setError("Could not reach the server.");
+        }
       }
     })();
     return () => {
-      cancelled = true;
+      // Invalidate in-flight work on unmount.
+      requestVersion.current += 1;
     };
   }, [applyInfo]);
 
   /* Re-enumerate the network after a Wi-Fi change and re-render from the
    * response (also reprints the banner + QR in the terminal server-side). */
   const refresh = useCallback(async () => {
+    const version = ++requestVersion.current;
     setRefreshing(true);
     setRefreshError(null);
     try {
       const res = await fetch("/api/network/refresh", { method: "POST" });
       if (!res.ok) throw new Error(`refresh ${res.status}`);
       const info: ServerInfo = await res.json();
-      applyInfo(info);
+      if (requestVersion.current === version) applyInfo(info);
     } catch {
-      setRefreshError("Couldn't refresh — is the server still running?");
+      if (requestVersion.current === version) {
+        setRefreshError("Couldn't refresh — is the server still running?");
+      }
     } finally {
-      setRefreshing(false);
+      if (requestVersion.current === version) setRefreshing(false);
     }
   }, [applyInfo]);
 

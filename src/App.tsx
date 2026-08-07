@@ -46,6 +46,10 @@ export default function App() {
   const [maxTextBytes, setMaxTextBytes] = useState(LIMITS.maxTextBytes);
   const [share, setShare] = useState<ServerInfo["share"]>(null);
   const [tab, setTab] = useState<"splats" | "files">("splats");
+  const tabRefs = useRef<Record<"splats" | "files", HTMLButtonElement | null>>({
+    splats: null,
+    files: null,
+  });
   const [theme, setThemeState] = useState<Theme>(getTheme);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
@@ -391,7 +395,20 @@ export default function App() {
                   id={`tab-${t}`}
                   aria-selected={tab === t}
                   aria-controls={`panel-${t}`}
+                  // Roving tabindex: Tab lands on the active tab; arrows move
+                  // selection AND focus between tabs (WAI-ARIA tabs pattern).
+                  tabIndex={tab === t ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current[t] = el;
+                  }}
                   onClick={() => setTab(t)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                    e.preventDefault();
+                    const next = t === "splats" ? "files" : "splats";
+                    setTab(next);
+                    tabRefs.current[next]?.focus();
+                  }}
                   className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
                     tab === t
                       ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100"

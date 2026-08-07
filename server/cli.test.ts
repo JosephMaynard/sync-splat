@@ -65,4 +65,16 @@ describe("bin/sync-splat.js", () => {
       stderr: expect.stringContaining("does not exist"),
     });
   });
+
+  it("--share as the final argument exits 1 instead of silently sharing cwd", async () => {
+    await expect(
+      execFileAsync(process.execPath, [binPath, "--share"], {
+        cwd: repoRoot,
+        timeout: 10_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("requires a folder path"),
+    });
+  });
 });

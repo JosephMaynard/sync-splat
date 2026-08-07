@@ -65,8 +65,8 @@ sync-splat serves a folder over the network, a bit like `python -m http.server` 
 - **`--share <path>`** shares a different folder instead. The path must be an existing directory.
 - **`--no-share`** turns folder sharing off entirely; only the clipboard/history features remain.
 - **Browse and download** any file in the tree. Non‑image files download as attachments; common raster images can preview inline.
-- **Upload** new files into any folder from the app. Uploads **never overwrite**: if a name is taken, sync-splat appends ` (1)`, ` (2)`, … before the extension.
-- **Dotfiles stay private.** Entries whose name starts with `.` — and any directory named that way — are never listed, downloaded, or written to, so `.env`, `.git`, and friends don't leak.
+- **Upload** new files into any folder from the app. Uploads **never overwrite**: if a name is taken, sync-splat inserts a space and appends `(1)`, `(2)`, … before the extension.
+- **Dotfiles stay private.** Entries whose name starts with `.` — and any directory named that way — are never listed, downloaded, or written to, so `.env`, `.git`, and friends don't leak. Symlinks that lead outside the shared folder are not followed.
 
 ## Security model
 

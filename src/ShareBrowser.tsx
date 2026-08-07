@@ -100,27 +100,38 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
         }
       }
       setUploading(true);
+      // One failure must not silently drop the rest of the batch: keep
+      // uploading and report every failed name at the end.
+      const failed: string[] = [];
       try {
         for (const f of list) {
-          const res = await fetch(
-            `/api/share/upload?dir=${encodeURIComponent(rel)}&name=${encodeURIComponent(f.name)}`,
-            {
-              method: "POST",
-              body: f,
-              headers: { "Content-Type": f.type || "application/octet-stream" },
-            },
-          );
-          if (!res.ok) {
-            if (res.status === 413) {
-              setUploadError(`"${f.name}" is too big.`);
-            } else {
-              setUploadError(`Upload failed (${res.status}).`);
+          try {
+            const res = await fetch(
+              `/api/share/upload?dir=${encodeURIComponent(rel)}&name=${encodeURIComponent(f.name)}`,
+              {
+                method: "POST",
+                body: f,
+                headers: {
+                  "Content-Type": f.type || "application/octet-stream",
+                },
+              },
+            );
+            if (!res.ok) {
+              failed.push(
+                res.status === 413 ? `"${f.name}" (too big)` : `"${f.name}" (${res.status})`,
+              );
             }
-            break;
+          } catch {
+            failed.push(`"${f.name}" (network error)`);
           }
         }
-      } catch {
-        setUploadError("Upload failed — is the server still running?");
+        if (failed.length > 0) {
+          setUploadError(
+            failed.length === list.length
+              ? `Upload failed: ${failed.join(", ")}`
+              : `Some uploads failed: ${failed.join(", ")}`,
+          );
+        }
       } finally {
         setUploading(false);
         reload();

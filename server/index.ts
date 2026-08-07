@@ -189,7 +189,7 @@ export async function createSyncSplatServer(
     printBanner({
       port: boundPort,
       urls,
-      mdnsUrl: getMdnsUrl(boundPort),
+      mdnsUrl: mdnsUrl(),
       hasClient: staticHandler.hasClient,
       shareDir,
     });

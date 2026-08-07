@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createSyncSplatServer, type SyncSplatServer } from "./index";
@@ -105,11 +106,12 @@ describe("GET /api/share/ls", () => {
     ["dot-dir", ".git"],
   ])("404s on bad path: %s", async (_label, raw) => {
     await startShared();
-    // Send the raw (possibly pre-encoded) value verbatim so the server does
-    // the URL-decoding, matching real client behaviour.
-    const res = await fetch(
-      `${baseUrl}/api/share/ls?path=${encodeURIComponent(raw)}`,
-    );
+    // Pre-encoded cases (containing "%") go on the wire verbatim so the
+    // server's own URL-decoding turns %2e%2e into ".." and the traversal
+    // guard is genuinely exercised; encoding them again would make the
+    // server see the harmless literal string "%2e%2e".
+    const query = raw.includes("%") ? raw : encodeURIComponent(raw);
+    const res = await fetch(`${baseUrl}/api/share/ls?path=${query}`);
     expect(res.status).toBe(404);
   });
 });
@@ -268,12 +270,70 @@ describe("POST /api/share/upload", () => {
       .filter((n) => n.startsWith(".sync-splat-tmp-"));
     expect(leftover).toEqual([]);
   });
+
+  it("cleans up the temp file when the client aborts mid-upload", async () => {
+    await startShared();
+    // Send headers + a partial body, then sever the connection before the
+    // body completes — the server must remove its temp file, not leak it.
+    await new Promise<void>((resolve) => {
+      const req = http.request({
+        host: "127.0.0.1",
+        port: server!.address.port,
+        path: `/api/share/upload?${q("name", "aborted.bin")}`,
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      req.on("error", () => resolve());
+      req.flushHeaders();
+      req.write(Buffer.alloc(1024, 7), () => {
+        setTimeout(() => {
+          req.destroy();
+          resolve();
+        }, 50);
+      });
+    });
+    // Give the server a beat to observe the close and unlink.
+    await new Promise((r) => setTimeout(r, 150));
+    const names = fs.readdirSync(shareRoot!);
+    expect(names.filter((n) => n.startsWith(".sync-splat-tmp-"))).toEqual([]);
+    expect(names).not.toContain("aborted.bin");
+  });
+
+  it("rejects symlinks that point outside the share root", async () => {
+    await startShared();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-out-"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "outside");
+    fs.symlinkSync(
+      path.join(outside, "secret.txt"),
+      path.join(shareRoot!, "escape.txt"),
+    );
+    fs.symlinkSync(outside, path.join(shareRoot!, "escape-dir"));
+    try {
+      const dl = await fetch(`${baseUrl}/api/share/dl?${q("path", "escape.txt")}`);
+      expect(dl.status).toBe(404);
+      const ls = await fetch(`${baseUrl}/api/share/ls?${q("path", "escape-dir")}`);
+      expect(ls.status).toBe(404);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("still serves symlinks whose target stays inside the root", async () => {
+    await startShared();
+    fs.writeFileSync(path.join(shareRoot!, "real.txt"), "inside");
+    fs.symlinkSync(
+      path.join(shareRoot!, "real.txt"),
+      path.join(shareRoot!, "alias.txt"),
+    );
+    const dl = await fetch(`${baseUrl}/api/share/dl?${q("path", "alias.txt")}`);
+    expect(dl.status).toBe(200);
+    expect(await dl.text()).toBe("inside");
+  });
 });
 
 describe("sharing disabled (shareDir: null)", () => {
   it("404s every /api/share/* route", async () => {
     await start({ shareDir: null });
-    expect(server?.hasClient !== undefined).toBe(true);
     const ls = await fetch(`${baseUrl}/api/share/ls`);
     expect(ls.status).toBe(404);
     const dl = await fetch(`${baseUrl}/api/share/dl?path=x`);

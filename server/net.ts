@@ -19,7 +19,23 @@ export function getAllowedHostnames(): Set<string> {
       allowed.add(iface.address.toLowerCase());
     }
   }
+  // The banner and QR modal advertise the mDNS name — browsers reaching us
+  // through it send it as their Origin hostname, so it must be allowed too.
+  const mdns = mdnsHostname();
+  if (mdns) {
+    allowed.add(mdns);
+    allowed.add(mdns.replace(/\.local$/, ""));
+  }
   return allowed;
+}
+
+/** This machine's mDNS hostname, lowercased, always ending in ".local".
+ *  Null when the OS reports no hostname. */
+function mdnsHostname(): string | null {
+  let host = os.hostname().toLowerCase();
+  if (!host) return null;
+  if (!host.endsWith(".local")) host += ".local";
+  return host;
 }
 
 /**
@@ -29,9 +45,8 @@ export function getAllowedHostnames(): Set<string> {
  * Wi-Fi changes. Returns null when the hostname is empty.
  */
 export function getMdnsUrl(port: number): string | null {
-  let host = os.hostname().toLowerCase();
+  const host = mdnsHostname();
   if (!host) return null;
-  if (!host.endsWith(".local")) host += ".local";
   return `http://${host}:${port}`;
 }
 

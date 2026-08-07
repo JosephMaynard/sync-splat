@@ -8,10 +8,8 @@ import { VERSION } from "./net";
 import { handleShareDl, handleShareLs, handleShareUpload } from "./share";
 import {
   UUID_RE,
-  asciiFallbackName,
-  encodeRFC5987,
+  downloadHeaders,
   isAllowedOrigin,
-  isInlineImage,
   sanitizeFilename,
   sendJson,
   sendStatus,
@@ -133,21 +131,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       return;
     }
     const file = item as FileItem;
-    const headers: Record<string, string | number> = {
-      "X-Content-Type-Options": "nosniff",
-      "Content-Length": blob.length,
-    };
-    if (isInlineImage(file.mime)) {
-      headers["Content-Type"] = file.mime;
-      headers["Content-Disposition"] = "inline";
-    } else {
-      headers["Content-Type"] = "application/octet-stream";
-      const fallback = asciiFallbackName(file.name);
-      headers["Content-Disposition"] =
-        `attachment; filename="${fallback}"; ` +
-        `filename*=UTF-8''${encodeRFC5987(file.name)}`;
-    }
-    res.writeHead(200, headers);
+    res.writeHead(200, downloadHeaders(file.name, file.mime, blob.length));
     res.end(blob);
   }
 
@@ -220,7 +204,9 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 405, "Method not allowed");
         return;
       }
-      void handleShareLs(res, shareDir, url.searchParams.get("path") ?? "");
+      handleShareLs(res, shareDir, url.searchParams.get("path") ?? "").catch(
+        () => sendStatus(res, 500, "Internal server error"),
+      );
       return;
     }
 
@@ -256,14 +242,14 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 403, "Cross-origin requests are not allowed");
         return;
       }
-      void handleShareUpload(
+      handleShareUpload(
         req,
         res,
         shareDir,
         url.searchParams.get("dir") ?? "",
         url.searchParams.get("name") ?? "",
         maxFileBytes,
-      );
+      ).catch(() => sendStatus(res, 500, "Internal server error"));
       return;
     }
 
