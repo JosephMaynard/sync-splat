@@ -91,20 +91,26 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
     async (files: FileList | File[]) => {
       setUploadError(null);
       const list = Array.from(files);
-      for (const f of list) {
+      // One bad file must not sink the batch: oversize files are recorded as
+      // failures up front, everything else still uploads, and every failed
+      // name is reported at the end.
+      const failed: string[] = [];
+      const valid = list.filter((f) => {
         if (f.size > maxFileBytes) {
-          setUploadError(
-            `"${f.name}" is too big (${humanSize(f.size)}). Max is ${humanSize(maxFileBytes)}.`,
-          );
-          return;
+          failed.push(`"${f.name}" (too big — max ${humanSize(maxFileBytes)})`);
+          return false;
         }
+        return true;
+      });
+      if (valid.length === 0) {
+        if (failed.length > 0) {
+          setUploadError(`Upload failed: ${failed.join(", ")}`);
+        }
+        return;
       }
       setUploading(true);
-      // One failure must not silently drop the rest of the batch: keep
-      // uploading and report every failed name at the end.
-      const failed: string[] = [];
       try {
-        for (const f of list) {
+        for (const f of valid) {
           try {
             const res = await fetch(
               `/api/share/upload?dir=${encodeURIComponent(rel)}&name=${encodeURIComponent(f.name)}`,

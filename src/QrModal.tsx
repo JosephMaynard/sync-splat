@@ -45,9 +45,13 @@ export default function QrModal({ onClose }: Props) {
 
   /* Render the QR + URLs from a fresh ServerInfo payload. */
   const applyInfo = useCallback((info: ServerInfo) => {
-    const chosen = pickUrl(info.urls);
+    // No LAN address (Wi-Fi off, cable unplugged)? The mDNS URL still works
+    // for local mDNS-capable devices — promote it to primary rather than
+    // showing an error, and don't repeat it as the secondary line.
+    const lan = pickUrl(info.urls);
+    const chosen = lan ?? info.mdnsUrl;
     setUrl(chosen);
-    setMdnsUrl(info.mdnsUrl);
+    setMdnsUrl(lan ? info.mdnsUrl : null);
     if (!chosen) {
       setError("No LAN address available.");
       setSvg(null);
