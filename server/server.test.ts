@@ -396,6 +396,42 @@ describe("origin validation", () => {
     });
     expect(ok).toBe(true);
   });
+
+  // The banner and QR modal advertise http://<hostname>.local — origins from
+  // that URL must be allowed for uploads and socket handshakes alike.
+  const mdnsHost = (() => {
+    let h = os.hostname().toLowerCase();
+    if (!h.endsWith(".local")) h += ".local";
+    return h;
+  })();
+
+  it("accepts uploads from the advertised .local origin", async () => {
+    await start();
+    const res = await fetch(`${baseUrl}/api/upload?name=mdns.txt`, {
+      method: "POST",
+      body: "payload",
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: `http://${mdnsHost}:${port}`,
+      },
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("accepts socket handshakes from the advertised .local origin", async () => {
+    await start();
+    const socket = ioc(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: { Origin: `http://${mdnsHost}:${port}` },
+    }) as unknown as ClientSocket;
+    sockets.push(socket);
+    const ok = await new Promise<boolean>((resolve) => {
+      socket.on("connect", () => resolve(true));
+      socket.on("connect_error", () => resolve(false));
+    });
+    expect(ok).toBe(true);
+  });
 });
 
 describe("configuration limits", () => {

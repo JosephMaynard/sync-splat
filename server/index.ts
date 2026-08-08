@@ -1,4 +1,5 @@
 import http from "node:http";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import type {
@@ -11,7 +12,7 @@ import { HistoryStore } from "./store";
 import { createStaticHandler } from "./static";
 import { createRequestHandler } from "./http";
 import { registerSocketHandlers, type SyncSplatIO } from "./socket";
-import { VERSION, getAllowedHostnames, getLanUrls } from "./net";
+import { VERSION, getAllowedHostnames, getLanUrls, getMdnsUrl } from "./net";
 import { isAllowedOrigin } from "./util";
 import { printBanner } from "./banner";
 
@@ -30,6 +31,10 @@ export interface SyncSplatOptions {
   /** Print the startup banner + QR to stdout. Off by default so tests stay
    *  quiet and never depend on the QR encoder. */
   banner?: boolean;
+  /** Shared-folder root. A string shares that directory; null disables sharing
+   *  entirely; undefined (the default) shares process.cwd(), like
+   *  `python -m http.server`. Non-null values must be an existing directory. */
+  shareDir?: string | null;
 }
 
 export interface SyncSplatServer {
@@ -82,6 +87,24 @@ export async function createSyncSplatServer(
   const clientDir =
     opts.clientDir !== undefined ? opts.clientDir : defaultClientDir();
 
+  // Resolve the shared-folder root: null disables sharing; undefined defaults
+  // to cwd; a string shares that dir. Validate + realpath the root once so all
+  // share routes prefix-check against a canonical, symlink-free path.
+  let shareDir: string | null = null;
+  if (opts.shareDir !== null) {
+    const requested = opts.shareDir ?? process.cwd();
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(requested);
+    } catch {
+      throw new Error(`shared folder does not exist: ${requested}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`shared folder is not a directory: ${requested}`);
+    }
+    shareDir = fs.realpathSync(requested);
+  }
+
   const httpServer = http.createServer();
   const io: SyncSplatIO = new Server<
     ClientToServerEvents,
@@ -102,6 +125,7 @@ export async function createSyncSplatServer(
 
   let boundPort = opts.port;
   const getUrls = () => getLanUrls(boundPort);
+  const mdnsUrl = () => getMdnsUrl(boundPort);
 
   const store = new HistoryStore({
     maxItems: LIMITS.maxItems,
@@ -117,6 +141,19 @@ export async function createSyncSplatServer(
     getAllowedHostnames,
     maxFileBytes,
     onItemCreated: (item: Item) => io.emit("item:new", item),
+    shareDir,
+    getMdnsUrl: mdnsUrl,
+    // Only reprint the banner when the server owns the terminal (banner:true).
+    onNetworkRefresh: opts.banner
+      ? () =>
+          printBanner({
+            port: boundPort,
+            urls: getUrls(),
+            mdnsUrl: mdnsUrl(),
+            hasClient: staticHandler.hasClient,
+            shareDir,
+          })
+      : undefined,
   });
   httpServer.on("request", requestHandler);
 
@@ -149,7 +186,13 @@ export async function createSyncSplatServer(
   };
 
   if (opts.banner) {
-    printBanner({ port: boundPort, urls, hasClient: staticHandler.hasClient });
+    printBanner({
+      port: boundPort,
+      urls,
+      mdnsUrl: mdnsUrl(),
+      hasClient: staticHandler.hasClient,
+      shareDir,
+    });
   }
 
   return server;

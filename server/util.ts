@@ -47,6 +47,7 @@ export const MIME_BY_EXT: Record<string, string> = {
   jpeg: "image/jpeg",
   gif: "image/gif",
   webp: "image/webp",
+  avif: "image/avif",
   ico: "image/x-icon",
   json: "application/json; charset=utf-8",
   map: "application/json; charset=utf-8",
@@ -131,6 +132,33 @@ export function asciiFallbackName(value: string): string {
     else out += ch;
   }
   return out.length > 0 ? out : "file";
+}
+
+/**
+ * Response headers for serving a user-supplied file: nosniff always; inline
+ * with the real mime for the raster-image allowlist, otherwise an
+ * octet-stream attachment with an RFC 5987 filename. Shared by clipboard
+ * downloads (/api/file/:id) and shared-folder downloads (/api/share/dl).
+ */
+export function downloadHeaders(
+  name: string,
+  mime: string,
+  size: number,
+): Record<string, string | number> {
+  const headers: Record<string, string | number> = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Length": size,
+  };
+  if (isInlineImage(mime)) {
+    headers["Content-Type"] = mime;
+    headers["Content-Disposition"] = "inline";
+  } else {
+    headers["Content-Type"] = "application/octet-stream";
+    headers["Content-Disposition"] =
+      `attachment; filename="${asciiFallbackName(name)}"; ` +
+      `filename*=UTF-8''${encodeRFC5987(name)}`;
+  }
+  return headers;
 }
 
 export function sendJson(
