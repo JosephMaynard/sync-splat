@@ -276,23 +276,41 @@ function formatAge(ms: number): string {
   return `${Math.round(h / 24)}d`;
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  "#39": "'",
+  "#x27": "'",
+};
+
 /** Crude HTML→text for printing text items: turn block/line breaks into
  *  newlines, drop the remaining tags, and decode the handful of entities the
- *  server-side capture is likely to emit. Good enough for terminal output. */
+ *  server-side capture is likely to emit. Good enough for terminal output
+ *  (stdout, never re-parsed as HTML). */
 function htmlToText(html: string): string {
-  return html
+  let s = html
     .replace(/<\s*br\s*\/?>/gi, "\n")
-    .replace(/<\/\s*(p|div|li|h[1-6]|tr|pre|blockquote)\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#0*39;/g, "'")
-    .replace(/&#x0*27;/gi, "'")
-    .replace(/\r\n/g, "\n")
-    .trim();
+    .replace(/<\/\s*(p|div|li|h[1-6]|tr|pre|blockquote)\s*>/gi, "\n");
+  // Strip tags to a fixpoint: one pass can leave adjacent/nested fragments, and
+  // `>?` also removes an unterminated trailing tag like "<script".
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/<[^>]*>?/g, "");
+  } while (s !== prev);
+  // Decode entities in a SINGLE pass (a callback, not chained replaces) so
+  // nothing is double-unescaped — e.g. "&amp;lt;" must yield "&lt;", not "<".
+  s = s.replace(
+    /&(nbsp|amp|lt|gt|quot|#0*39|#x0*27);/gi,
+    (_m, name: string) => {
+      const key = name.toLowerCase().replace(/^#x0*/, "#x").replace(/^#0*/, "#");
+      return HTML_ENTITIES[key] ?? _m;
+    },
+  );
+  return s.replace(/\r\n/g, "\n").trim();
 }
 
 function snippet(html: string, max = 60): string {

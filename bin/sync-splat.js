@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, statSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { randomInt } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -108,10 +108,11 @@ function parseArgs(argv) {
 const PIN_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 
 function generatePin(length = 10) {
-  const bytes = randomBytes(length);
   let out = "";
   for (let i = 0; i < length; i += 1) {
-    out += PIN_ALPHABET[bytes[i] % PIN_ALPHABET.length];
+    // randomInt does unbiased rejection sampling; `byte % alphabet.length`
+    // would skew toward the first (256 % 31) characters.
+    out += PIN_ALPHABET[randomInt(PIN_ALPHABET.length)];
   }
   return out;
 }
