@@ -42,21 +42,28 @@ const CLIENT_SUBCOMMANDS = new Set(["send", "history", "get", "list"]);
 const userArgs = process.argv.slice(2);
 
 // Dispatch to the CLI client when the first argument is a client subcommand.
-// Everything else (flags, no args) runs the server exactly as before.
-if (CLIENT_SUBCOMMANDS.has(userArgs[0])) {
-  const cliUrl = new URL("../dist/server/cli.js", import.meta.url);
-  if (!existsSync(fileURLToPath(cliUrl))) {
-    console.error("sync-splat: client build not found (dist/server/cli.js).");
-    console.error("If you cloned the repo, run `pnpm build` first.");
-    console.error("If you installed from npm, try reinstalling the package.");
-    process.exit(1);
+// Everything else (flags, no args) runs the server exactly as before. A single
+// top-level catch turns any stray rejection (e.g. a failed dynamic import) into
+// the CLI's error style instead of an unhandled-rejection stack trace.
+try {
+  if (CLIENT_SUBCOMMANDS.has(userArgs[0])) {
+    const cliUrl = new URL("../dist/server/cli.js", import.meta.url);
+    if (!existsSync(fileURLToPath(cliUrl))) {
+      console.error("sync-splat: client build not found (dist/server/cli.js).");
+      console.error("If you cloned the repo, run `pnpm build` first.");
+      console.error("If you installed from npm, try reinstalling the package.");
+      process.exit(1);
+    }
+    const { runCli } = await import(cliUrl.href);
+    // Set exitCode rather than process.exit so buffered stdout flushes cleanly
+    // even when output is redirected to a pipe or file.
+    process.exitCode = await runCli(userArgs);
+  } else {
+    await runServer(userArgs);
   }
-  const { runCli } = await import(cliUrl.href);
-  // Set exitCode rather than process.exit so buffered stdout flushes cleanly
-  // even when output is redirected to a pipe or file.
-  process.exitCode = await runCli(userArgs);
-} else {
-  runServer(userArgs);
+} catch (err) {
+  console.error(`sync-splat: ${err?.message ?? err}`);
+  process.exitCode = 1;
 }
 
 function parseArgs(argv) {

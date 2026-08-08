@@ -22,6 +22,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # CI only reads the repo; don't leave the token in .git/config.
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.0.9

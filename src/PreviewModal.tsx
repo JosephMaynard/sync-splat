@@ -108,7 +108,9 @@ export default function PreviewModal({ target, onClose }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const text = await fetchCappedText(withKey(fileUrl));
+        // fetchCappedText sends the X-Splat-Key header, so no ?k= needed here;
+        // withKey stays for <img>/<a> URLs that can't set headers.
+        const text = await fetchCappedText(fileUrl);
         if (cancelled) return;
         if (kind === "markdown") {
           const rendered = marked.parse(text, { async: false }) as string;

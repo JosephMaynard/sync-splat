@@ -11,26 +11,16 @@
  *   - socket.io: the handshake `auth.token` (see socket.ts).
  */
 
-import { AUTH } from "../shared/types";
+import { AUTH, parseTokenFromHash } from "../shared/types";
+
+// Re-exported so existing importers (and tests) can keep using it from here.
+export { parseTokenFromHash };
 
 const STORAGE_KEY = "sync-splat-key";
 
 /** In-memory cache so we don't hit localStorage on every request. `undefined`
  *  means "not yet loaded"; `null` means "known to be absent". */
 let cachedToken: string | null | undefined;
-
-/**
- * Pure: extract the passcode token from a URL fragment such as `#k=abc123`.
- * Kept DOM-free so it can be unit-tested. Returns the trimmed token or null.
- */
-export function parseTokenFromHash(hash: string): string | null {
-  if (!hash) return null;
-  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
-  if (!raw) return null;
-  const token = new URLSearchParams(raw).get(AUTH.fragmentParam);
-  const trimmed = token?.trim();
-  return trimmed ? trimmed : null;
-}
 
 /** The token we know about, if any (from the fragment or a prior session). */
 export function getToken(): string | null {

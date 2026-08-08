@@ -1,12 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clickable, withAuthFragment } from "./banner";
-
-/** Mirror of how the client parses `#k=<token>` (URLSearchParams decodes
- *  percent-encoding). Kept inline so this server test doesn't import DOM code. */
-function parseTokenFromHash(hash: string): string | null {
-  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
-  return new URLSearchParams(raw).get("k");
-}
+// The real client-side parser lives in shared/types (DOM-free), so the
+// round-trip is validated against production code, not a copy.
+import { parseTokenFromHash } from "../shared/types";
 
 const URL = "http://192.168.1.5:3011";
 const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");

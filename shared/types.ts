@@ -90,6 +90,21 @@ export interface ServerInfoLocked {
   authRequired: true;
 }
 
+/**
+ * Extract the passcode token from a URL fragment such as `#k=abc123`. Lives
+ * here (DOM-free, uses only URLSearchParams) so it is the single source of
+ * truth shared by the browser client and by tests. Returns the trimmed token
+ * or null. Percent-encoding is decoded by URLSearchParams.
+ */
+export function parseTokenFromHash(hash: string): string | null {
+  if (!hash) return null;
+  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (!raw) return null;
+  const token = new URLSearchParams(raw).get(AUTH.fragmentParam);
+  const trimmed = token?.trim();
+  return trimmed ? trimmed : null;
+}
+
 /** File extensions the client offers rich preview for (fetched, rendered
  *  client-side, always through DOMPurify). Images use INLINE_IMAGE_MIMES. */
 export const PREVIEW_MARKDOWN_EXTENSIONS = ["md", "markdown"] as const;

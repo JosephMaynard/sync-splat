@@ -429,6 +429,9 @@ describe("socket acks", () => {
 });
 
 describe("in-flight upload memory budget", () => {
+  // Two pollStatus loops of up to 100 × 20ms each, plus request overhead —
+  // give it well over the default 5s so a genuine hang reports the loop's
+  // "never observed status" diagnostic rather than a bare timeout.
   it("rejects a second upload with 503 when the budget is reserved", async () => {
     // Budget == maxTotalFileBytes. Allow a single file that large so the
     // per-file 413 check doesn't fire first.
@@ -476,14 +479,19 @@ describe("in-flight upload memory budget", () => {
       throw new Error(`never observed status ${want}`);
     };
 
-    const busy = await pollStatus(503, "b");
-    expect(JSON.parse(busy.body).error).toBe("server busy");
+    // Destroy A no matter how the assertions go, so a failure can't leak the
+    // open socket and hang the suite.
+    try {
+      const busy = await pollStatus(503, "b");
+      expect(JSON.parse(busy.body).error).toBe("server busy");
 
-    // Tear down A; its reservation is released on the request's close event.
-    held.destroy();
-
-    // Once A is gone the budget frees and a normal upload succeeds again.
-    const ok = await pollStatus(201, "c");
-    expect(ok.status).toBe(201);
-  });
+      // Release A's reservation (freed on the request's close event), then a
+      // normal upload succeeds again.
+      held.destroy();
+      const ok = await pollStatus(201, "c");
+      expect(ok.status).toBe(201);
+    } finally {
+      held.destroy();
+    }
+  }, 15_000);
 });
