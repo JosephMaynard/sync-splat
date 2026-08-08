@@ -186,6 +186,17 @@ async function runServer(argv) {
       console.error("sync-splat: --pin value cannot be empty");
       process.exit(1);
     }
+    // A custom pin must survive every transport: it rides an HTTP header
+    // (ISO-8859-1 only, no controls) and a URL fragment the client trims.
+    // Restrict to printable ASCII with no whitespace so it can't
+    // authenticate on one client and silently fail on another.
+    if (!/^[\x21-\x7e]+$/.test(args.pin)) {
+      console.error(
+        "sync-splat: --pin must be printable ASCII with no spaces " +
+          "(so it works over HTTP headers and QR/URL fragments)",
+      );
+      process.exit(1);
+    }
     token = args.pin;
   }
 

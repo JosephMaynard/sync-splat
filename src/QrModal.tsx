@@ -168,18 +168,21 @@ export default function QrModal({ onClose }: Props) {
             )}
             {url && (
               <div className="flex flex-col items-center gap-1">
+                {/* Carry the passcode fragment on the visible links too, so
+                    copying the address (or the QR-unavailable fallback) still
+                    authenticates. withKeyFragment is a no-op without a key. */}
                 <a
-                  href={url}
+                  href={withKeyFragment(url)}
                   className="break-all text-center text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
                 >
-                  {url}
+                  {withKeyFragment(url)}
                 </a>
                 {mdnsUrl && (
                   <a
-                    href={mdnsUrl}
+                    href={withKeyFragment(mdnsUrl)}
                     className="break-all text-center text-xs text-gray-500 hover:underline dark:text-gray-400"
                   >
-                    {mdnsUrl}
+                    {withKeyFragment(mdnsUrl)}
                   </a>
                 )}
               </div>

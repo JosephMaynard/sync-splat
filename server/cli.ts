@@ -310,12 +310,37 @@ function htmlToText(html: string): string {
       return HTML_ENTITIES[key] ?? _m;
     },
   );
-  return s.replace(/\r\n/g, "\n").trim();
+  s = s.replace(/\r\n?/g, "\n");
+  // Strip terminal control bytes (ESC, BEL, other C0/C1) so captured text
+  // can't drive the receiving terminal via OSC/CSI sequences when printed.
+  // Tab (\x09) and newline (\x0a) are kept.
+  // eslint-disable-next-line no-control-regex
+  s = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+  return s.trim();
 }
 
 function snippet(html: string, max = 60): string {
   const text = htmlToText(html).replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Turn literal CLI text into HTML for /api/text, which stores the body as
+ * renderable HTML. Escaping makes tags show verbatim (so `send "<b>x</b>"`
+ * isn't interpreted and the browser can't be fed markup), control bytes are
+ * dropped, and newlines become <br> so line breaks survive the round-trip
+ * back through htmlToText.
+ */
+function textToHtml(text: string): string {
+  return text
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n/g, "<br>");
 }
 
 function pad(value: string, width: number): string {
@@ -402,7 +427,7 @@ async function cmdSend(args: string[], io: CliIO): Promise<number> {
     {
       method: "POST",
       headers: { "content-type": "text/plain; charset=utf-8", ...authHeaders(key) },
-      body: text,
+      body: textToHtml(text),
     },
     baseUrl,
   );
@@ -526,15 +551,15 @@ async function cmdGet(args: string[], io: CliIO): Promise<number> {
     return 0;
   }
 
+  const source = Readable.fromWeb(
+    dl.body as unknown as Parameters<typeof Readable.fromWeb>[0],
+  );
   if (flags.out) {
-    await pipeline(
-      Readable.fromWeb(dl.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
-      createWriteStream(flags.out),
-    );
+    await pipeline(source, createWriteStream(flags.out));
   } else {
-    // Buffer then write once: binary-safe, and the awaited write guarantees the
-    // bytes are flushed before we return an exit code.
-    await writeAll(io.stdout, Buffer.from(await dl.arrayBuffer()));
+    // Stream to stdout with backpressure so a large file isn't buffered whole;
+    // end:false leaves the shared stdout open for the caller.
+    await pipeline(source, io.stdout, { end: false });
   }
   return 0;
 }

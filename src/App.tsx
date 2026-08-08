@@ -283,6 +283,13 @@ export default function App() {
       } catch {
         setUploadError("Upload failed — is the server still running?");
         return false;
+      } finally {
+        // Drop this file's progress entry so a failed upload can't leave a
+        // permanent bar stuck at 100% (and a finished one clears cleanly).
+        setUploadProgress((p) => {
+          const { [localId]: _removed, ...rest } = p;
+          return rest;
+        });
       }
     },
     [],

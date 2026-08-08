@@ -134,6 +134,34 @@ describe("runCli send/history/get", () => {
     expect(await runCli(["get", id, "--url", baseUrl], got.io)).toBe(0);
     expect(got.outText().trim()).toBe("by id please");
   });
+
+  it("sends HTML-looking text literally and round-trips it via get", async () => {
+    await start();
+    const input = "<script>x</script> a & b <c>";
+    const send = makeIO();
+    expect(await runCli(["send", input, "--url", baseUrl], send.io)).toBe(0);
+
+    const got = makeIO();
+    await runCli(["get", "0", "--url", baseUrl], got.io);
+    // Tags are not interpreted; the text comes back exactly as sent.
+    expect(got.outText().trim()).toBe(input);
+  });
+
+  it("strips terminal control sequences from get output", async () => {
+    await start();
+    const ESC = "\x1b";
+    const BEL = "\x07";
+    // An OSC title-change sequence must not survive to the terminal.
+    const send = makeIO(`${ESC}]0;PWNED${BEL}hello`);
+    expect(await runCli(["send", "--url", baseUrl], send.io)).toBe(0);
+
+    const got = makeIO();
+    await runCli(["get", "0", "--url", baseUrl], got.io);
+    const out = got.outText();
+    expect(out).not.toContain(ESC);
+    expect(out).not.toContain(BEL);
+    expect(out).toContain("hello");
+  });
 });
 
 describe("runCli errors", () => {
