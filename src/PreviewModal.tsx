@@ -32,7 +32,11 @@ type Loaded =
   | { state: "code"; html: string }
   | { state: "fallback"; reason: string };
 
-/** Fetch a text file (capped at maxPreviewBytes) for markdown/code rendering. */
+/**
+ * Fetch a text file for markdown/code rendering, capped at maxPreviewBytes.
+ * Streams the body and aborts as soon as the cap is exceeded, so a server that
+ * sends no Content-Length (or a wrong one) can't make us buffer a huge file.
+ */
 async function fetchCappedText(url: string): Promise<string> {
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`fetch ${res.status}`);
@@ -40,11 +44,38 @@ async function fetchCappedText(url: string): Promise<string> {
   if (Number.isFinite(declared) && declared > LIMITS.maxPreviewBytes) {
     throw new Error("too-big");
   }
-  const text = await res.text();
-  if (new TextEncoder().encode(text).length > LIMITS.maxPreviewBytes) {
-    throw new Error("too-big");
+  if (!res.body) {
+    // No stream (unusual) — fall back to buffered read with a post-check.
+    const text = await res.text();
+    if (new TextEncoder().encode(text).length > LIMITS.maxPreviewBytes) {
+      throw new Error("too-big");
+    }
+    return text;
   }
-  return text;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > LIMITS.maxPreviewBytes) {
+        await reader.cancel();
+        throw new Error("too-big");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    buf.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
 }
 
 export default function PreviewModal({ target, onClose }: Props) {
@@ -62,9 +93,14 @@ export default function PreviewModal({ target, onClose }: Props) {
       ? classifyPreview(target.name, target.mime)
       : "text";
 
+  // Stable primitives for the fetch effect's deps, so a parent passing a fresh
+  // target object (same values) doesn't retrigger a refetch.
+  const fileUrl = target.type === "file" ? target.url : null;
+  const fileName = target.type === "file" ? target.name : null;
+
   useEffect(() => {
-    if (target.type !== "file") return;
-    // Images render natively via <img>; nothing to fetch here.
+    // Only file targets fetch; images render natively via <img>.
+    if (fileUrl === null || fileName === null) return;
     if (kind === "image" || kind === "none") return;
 
     // `loaded` already initializes to "loading" for file targets, and this
@@ -72,7 +108,7 @@ export default function PreviewModal({ target, onClose }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const text = await fetchCappedText(withKey(target.url));
+        const text = await fetchCappedText(withKey(fileUrl));
         if (cancelled) return;
         if (kind === "markdown") {
           const rendered = marked.parse(text, { async: false }) as string;
@@ -81,7 +117,7 @@ export default function PreviewModal({ target, onClose }: Props) {
             html: DOMPurify.sanitize(rendered),
           });
         } else {
-          const ext = fileExtension(target.name);
+          const ext = fileExtension(fileName);
           const lang = hljsLanguageForExtension(ext);
           const highlighted =
             lang && hljs.getLanguage(lang)
@@ -104,7 +140,13 @@ export default function PreviewModal({ target, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [target, kind]);
+    // Stable primitives, not the target object identity, so a parent re-render
+    // that passes a fresh object doesn't refetch.
+  }, [
+    fileUrl,
+    fileName,
+    kind,
+  ]);
 
   const title =
     target.type === "file" ? target.name : (target.title ?? "Preview");

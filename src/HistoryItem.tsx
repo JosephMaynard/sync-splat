@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import {
   ClipboardDocumentIcon,
@@ -101,15 +101,20 @@ export default function HistoryItem({ item, onDelete }: Props) {
     if (ok) setCopied(true);
   };
 
-  const previewTarget: PreviewTarget =
-    item.kind === "text"
-      ? { type: "text", html: cleanHtml, title: "Splat" }
-      : {
-          type: "file",
-          name: item.name,
-          mime: item.mime,
-          url: `/api/file/${item.id}`,
-        };
+  // Memoized so a parent re-render doesn't hand PreviewModal a fresh object
+  // and trigger a needless refetch while it's open.
+  const previewTarget = useMemo<PreviewTarget>(
+    () =>
+      item.kind === "text"
+        ? { type: "text", html: cleanHtml, title: "Splat" }
+        : {
+            type: "file",
+            name: item.name,
+            mime: item.mime,
+            url: `/api/file/${item.id}`,
+          },
+    [item, cleanHtml],
+  );
 
   return (
     <>

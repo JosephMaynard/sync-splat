@@ -109,7 +109,9 @@ export SYNC_SPLAT_KEY=hunter2
 sync-splat send "no more flags"
 ```
 
-`--url` (default `http://localhost:3011`) and `--key` also read from `$SYNC_SPLAT_URL` and `$SYNC_SPLAT_KEY`; a URL containing a `#k=`/`?k=` passcode is accepted too. Run `sync-splat send --help` for the full client reference.
+`--url` (default `http://localhost:3011`) and `--key` also read from `$SYNC_SPLAT_URL` and `$SYNC_SPLAT_KEY`; a URL containing a `#k=`/`?k=` passcode is accepted too, and the CLI strips the key out of the URL before sending it — it only ever travels in the `X-Splat-Key` header. Run `sync-splat send --help` for the full client reference.
+
+> **Passcode in browser links.** The web app authenticates fetches and the socket with a header, but plain `<a href>` download links and `<img>` preview URLs can't set headers, so the browser appends the passcode as a `?k=<passcode>` query param (a `splat-key` cookie is set too as a backstop). That means the passcode can appear in browser history and in any server/proxy access logs that record query strings. On a trusted LAN with no proxy in between this is a non-issue; if it matters to you, treat the passcode as low-secrecy and rotate it by restarting with a new `--pin`.
 
 ## Security model
 

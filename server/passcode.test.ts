@@ -450,26 +450,40 @@ describe("in-flight upload memory budget", () => {
     held.on("error", () => {});
     held.write("x");
 
-    // Give the server a moment to receive A's headers and reserve the budget.
-    await new Promise((r) => setTimeout(r, 100));
+    // Poll (rather than sleep a fixed time, which is flaky on slow CI) until
+    // A's reservation lands and a tiny B is refused with 503. Each probe uses
+    // a fresh name so a stray early success can't collide.
+    const pollStatus = async (
+      want: number,
+      namePrefix: string,
+    ): Promise<{ status: number; body: string }> => {
+      for (let i = 0; i < 100; i += 1) {
+        try {
+          const r = await raw("POST", `/api/upload?name=${namePrefix}${i}.bin`, {
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "Content-Length": "1",
+            },
+            body: "x",
+          });
+          if (r.status === want) return r;
+        } catch {
+          // The 503 path destroys the request socket, which can surface as a
+          // connection reset before the body is read — treat as a retry.
+        }
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      throw new Error(`never observed status ${want}`);
+    };
 
-    // Request B is tiny but there's no budget left → 503.
-    const busy = await raw("POST", "/api/upload?name=b.bin", {
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "Content-Length": "1",
-      },
-      body: "x",
-    });
-    expect(busy.status).toBe(503);
+    const busy = await pollStatus(503, "b");
     expect(JSON.parse(busy.body).error).toBe("server busy");
 
     // Tear down A; its reservation is released on the request's close event.
     held.destroy();
 
-    // After A is gone, a normal small upload succeeds again.
-    await new Promise((r) => setTimeout(r, 100));
-    const ok = await upload("c.bin", Buffer.from("ok"));
+    // Once A is gone the budget frees and a normal upload succeeds again.
+    const ok = await pollStatus(201, "c");
     expect(ok.status).toBe(201);
   });
 });

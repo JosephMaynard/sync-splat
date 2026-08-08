@@ -13,7 +13,7 @@ import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { FileItem, Item, ServerInfo, ServerInfoLocked } from "../shared/types";
-import { AUTH } from "../shared/types";
+import { AUTH, LIMITS } from "../shared/types";
 
 const DEFAULT_URL = "http://localhost:3011";
 
@@ -175,12 +175,49 @@ function statusError(status: number, what: string): CliError {
   return new CliError(`${what} failed (server responded ${status})`);
 }
 
-async function readAll(stream: NodeJS.ReadableStream): Promise<Buffer> {
+/** Read a stream fully, rejecting as soon as it exceeds `maxBytes` so a huge
+ *  (or endless) stdin can't be buffered whole before the server rejects it. */
+async function readAll(
+  stream: NodeJS.ReadableStream,
+  maxBytes: number,
+): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    total += buf.length;
+    if (total > maxBytes) {
+      throw new CliError(
+        `input is larger than the server's limit (${maxBytes} bytes) — send it as a file instead`,
+      );
+    }
+    chunks.push(buf);
   }
-  return Buffer.concat(chunks);
+  return Buffer.concat(chunks, total);
+}
+
+/** The server's max text size, for capping stdin. Falls back to the built-in
+ *  default when /api/info is unreachable or withholds it. */
+async function getMaxTextBytes(
+  baseUrl: string,
+  key: string | undefined,
+): Promise<number> {
+  try {
+    const res = await request(
+      endpoint(baseUrl, "/api/info"),
+      { headers: authHeaders(key) },
+      baseUrl,
+    );
+    if (res.ok) {
+      const info = (await res.json()) as Partial<ServerInfo>;
+      if (typeof info.maxTextBytes === "number" && info.maxTextBytes > 0) {
+        return info.maxTextBytes;
+      }
+    }
+  } catch {
+    /* fall through to the default */
+  }
+  return LIMITS.maxTextBytes;
 }
 
 /** Await a single write so output is flushed before the caller (and, in turn,
@@ -306,13 +343,24 @@ async function cmdSend(args: string[], io: CliIO): Promise<number> {
     return 0;
   }
   const { baseUrl, key } = resolveTarget(flags);
-  const positional = flags._[0];
+  const positionals = flags._;
 
-  // Decide file vs. text: --file always uploads; a bare positional that names
-  // an existing file uploads; otherwise it's text.
+  // "-" reads stdin and must stand alone.
+  const usesStdin = positionals.includes("-");
+  if (usesStdin && (positionals.length > 1 || flags.file)) {
+    throw new CliError('"-" (stdin) cannot be combined with other arguments');
+  }
+
+  // Decide file vs. text: --file always uploads; a lone positional that names
+  // an existing file uploads; multiple positionals are always joined as text.
   let filePath = flags.file;
-  if (!filePath && positional && positional !== "-") {
-    if (await isExistingFile(positional)) filePath = positional;
+  if (
+    !filePath &&
+    positionals.length === 1 &&
+    positionals[0] !== "-" &&
+    (await isExistingFile(positionals[0]))
+  ) {
+    filePath = positionals[0];
   }
 
   if (filePath) {
@@ -320,10 +368,12 @@ async function cmdSend(args: string[], io: CliIO): Promise<number> {
   }
 
   let text: string;
-  if (positional !== undefined && positional !== "-") {
-    text = positional;
+  if (!usesStdin && positionals.length > 0) {
+    // Join so `sync-splat send hello world` sends "hello world".
+    text = positionals.join(" ");
   } else {
-    text = (await readAll(io.stdin)).toString("utf8");
+    const limit = await getMaxTextBytes(baseUrl, key);
+    text = (await readAll(io.stdin, limit)).toString("utf8");
   }
   if (text.length === 0) {
     throw new CliError("nothing to send (empty input)");

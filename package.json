@@ -39,7 +39,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "prepublishOnly": "npm run lint && npm run build && npm run test",
-    "test:e2e": "playwright test"
+    "test:e2e": "pnpm build && playwright test"
   },
   "dependencies": {
     "socket.io": "^4.8.3"
@@ -54,7 +54,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
     "concurrently": "^9.1.2",
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.13",
     "esbuild": "^0.28.1",
     "eslint": "^9.25.0",
     "eslint-plugin-react-hooks": "^7.1.1",

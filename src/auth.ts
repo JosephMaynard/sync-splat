@@ -67,6 +67,18 @@ export function initAuthFromHash(): void {
   history.replaceState(null, "", location.pathname + location.search);
 }
 
+/** Forget the stored key (localStorage + cookie + cache). Used when a key is
+ *  rejected so the next attempt starts clean. */
+export function clearToken(): void {
+  cachedToken = null;
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* storage disabled — the cache reset above still applies */
+  }
+  document.cookie = `${AUTH.cookie}=; path=/; SameSite=Strict; max-age=0`;
+}
+
 /** Request headers carrying the key, or `{}` when there is no key. */
 export function authHeaders(): Record<string, string> {
   const token = getToken();

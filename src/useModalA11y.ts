@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -19,6 +19,15 @@ export function useModalA11y(
   containerRef: RefObject<HTMLElement | null>,
   onClose: () => void,
 ): void {
+  // Keep the latest onClose in a ref so a changing callback identity doesn't
+  // re-run the focus-management effect (which would re-capture focus and
+  // re-trap on every parent render). Sync in its own effect, not during
+  // render. The main effect below stays mount-only.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const container = containerRef.current;
@@ -36,7 +45,7 @@ export function useModalA11y(
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;
@@ -64,5 +73,5 @@ export function useModalA11y(
       document.removeEventListener("keydown", onKeyDown, true);
       previouslyFocused?.focus?.();
     };
-  }, [containerRef, onClose]);
+  }, [containerRef]);
 }

@@ -239,7 +239,14 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
       )}
 
       {uploadProgress && (
-        <div className="mb-3" aria-live="polite">
+        <div
+          className="mb-3"
+          role="progressbar"
+          aria-label={`Uploading ${uploadProgress.name}`}
+          aria-valuenow={Math.round(uploadProgress.fraction * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
           <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500 dark:text-gray-400">
             <span className="truncate">
               Uploading {middleTruncate(uploadProgress.name, 28)}

@@ -28,7 +28,9 @@ function pickUrl(urls: string[]): string | null {
  *  No-op when there's no passcode. */
 function withKeyFragment(url: string): string {
   const token = getToken();
-  return token ? `${url}#${AUTH.fragmentParam}=${token}` : url;
+  return token
+    ? `${url}#${AUTH.fragmentParam}=${encodeURIComponent(token)}`
+    : url;
 }
 
 export default function QrModal({ onClose }: Props) {

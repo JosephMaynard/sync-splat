@@ -56,8 +56,7 @@
   color: #7c3aed;
 }
 .hljs-tag,
-.hljs-meta,
-.hljs-deletion {
+.hljs-meta {
   color: #9333ea;
 }
 .hljs-deletion {
@@ -126,7 +125,7 @@
 /* ------------------------------------------------------------------ */
 .md-preview {
   line-height: 1.65;
-  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .md-preview > :first-child {
   margin-top: 0;

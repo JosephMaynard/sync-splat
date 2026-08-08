@@ -17,7 +17,7 @@ import ShareBrowser from "./ShareBrowser";
 import PasscodePrompt from "./PasscodePrompt";
 import Logo from "./Logo";
 import { humanSize } from "./util";
-import { authHeaders, setToken } from "./auth";
+import { authHeaders, setToken, clearToken } from "./auth";
 import { uploadWithProgress } from "./upload";
 
 /** Result of a broadcast: whether the (optional) text send succeeded. */
@@ -122,7 +122,11 @@ export default function App() {
   const loadInfo = useCallback(async (): Promise<"ok" | "locked"> => {
     try {
       const res = await fetch("/api/info", { headers: authHeaders() });
-      if (!res.ok) return "locked";
+      // Only a 401 means "wrong/missing key". Any other non-OK (500, etc.) is
+      // not an auth problem — boot with defaults rather than trapping the user
+      // behind a passcode prompt they can't satisfy.
+      if (res.status === 401) return "locked";
+      if (!res.ok) return "ok";
       const info: ServerInfo | ServerInfoLocked = await res.json();
       if (info.authRequired && !("maxFileBytes" in info)) {
         authRequiredRef.current = true;
@@ -162,6 +166,8 @@ export default function App() {
         setAuthState("ok");
         return true;
       }
+      // Rejected: drop the bad token so it isn't reused on the next attempt.
+      clearToken();
       return false;
     },
     [loadInfo],
@@ -177,11 +183,13 @@ export default function App() {
       setHistory((prev) => prev.filter((it) => it.id !== id));
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
-    const onConnectError = () => {
-      // With a passcode in play, a rejected handshake means the key is bad —
-      // fall back to the passcode prompt. Otherwise it's a transient blip that
-      // socket.io retries on its own.
-      if (authRequiredRef.current) setAuthState("locked");
+    const onConnectError = (err: Error) => {
+      // The server's socket middleware rejects a bad key with
+      // Error("unauthorized"); only that (with a passcode in play) should
+      // surface the prompt. Transport/network blips socket.io retries itself.
+      if (authRequiredRef.current && err.message === "unauthorized") {
+        setAuthState("locked");
+      }
     };
 
     socket.on("history", onHistory);

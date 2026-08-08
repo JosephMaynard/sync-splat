@@ -20,7 +20,9 @@ export interface BannerInfo {
  *  fragment stays client-side (browsers never send it to the server). */
 export function withAuthFragment(url: string, token: string | null): string {
   if (!token) return url;
-  return `${url}/#${AUTH.fragmentParam}=${token}`;
+  // Encode so custom passcodes containing &, #, %, spaces, … survive as one
+  // fragment value; the client parses it back with URLSearchParams (decodes).
+  return `${url}/#${AUTH.fragmentParam}=${encodeURIComponent(token)}`;
 }
 
 /**

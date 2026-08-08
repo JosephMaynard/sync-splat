@@ -37,8 +37,16 @@ test("previews a markdown file with rendered HTML", async ({ page }) => {
   }, md);
   expect(id).toBeTruthy();
 
-  // The new file item shows a Preview button; clicking it renders markdown.
-  await page.getByRole("button", { name: /preview/i }).first().click();
+  // Scope to the notes.md row — an earlier test may have left a text splat
+  // (also previewable) in the shared history, so an unscoped .first() would be
+  // ambiguous. The row is the deepest element holding both the filename and a
+  // Preview button.
+  const row = page
+    .locator("div")
+    .filter({ hasText: "notes.md" })
+    .filter({ has: page.getByRole("button", { name: /preview/i }) })
+    .last();
+  await row.getByRole("button", { name: /preview/i }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   // marked turns "# Title" into a heading and **bold** into <strong>.
