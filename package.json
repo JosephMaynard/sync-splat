@@ -1,6 +1,6 @@
 {
   "name": "sync-splat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Share text and small files between devices on your local network. Run it, scan the QR code, splat.",
   "type": "module",
   "license": "MIT",
@@ -35,10 +35,11 @@
     "typecheck": "tsc -b",
     "build": "npm run typecheck && npm run build:client && npm run build:server",
     "build:client": "vite build",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server/index.js",
+    "build:server": "node scripts/build-server.mjs",
     "test": "vitest run",
     "lint": "eslint .",
-    "prepublishOnly": "npm run lint && npm run build && npm run test"
+    "prepublishOnly": "npm run lint && npm run build && npm run test",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "socket.io": "^4.8.3"
@@ -46,6 +47,7 @@
   "devDependencies": {
     "@eslint/js": "^9.25.0",
     "@heroicons/react": "^2.2.0",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.2",
     "@types/node": "^22.15.0",
     "@types/react": "^19.2.17",
@@ -58,6 +60,8 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "socket.io-client": "^4.8.3",

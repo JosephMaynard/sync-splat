@@ -3,6 +3,9 @@ import DOMPurify from "dompurify";
 import { XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { encodeQR, renderQRToSvg } from "../qr/src";
 import type { ServerInfo } from "../shared/types";
+import { AUTH } from "../shared/types";
+import { authHeaders, getToken } from "./auth";
+import { useModalA11y } from "./useModalA11y";
 
 interface Props {
   onClose: () => void;
@@ -21,6 +24,13 @@ function pickUrl(urls: string[]): string | null {
   return match ?? urls[0];
 }
 
+/** Embed the passcode in the URL fragment so a scan authenticates automatically.
+ *  No-op when there's no passcode. */
+function withKeyFragment(url: string): string {
+  const token = getToken();
+  return token ? `${url}#${AUTH.fragmentParam}=${token}` : url;
+}
+
 export default function QrModal({ onClose }: Props) {
   const [url, setUrl] = useState<string | null>(null);
   const [mdnsUrl, setMdnsUrl] = useState<string | null>(null);
@@ -33,15 +43,10 @@ export default function QrModal({ onClose }: Props) {
   // refresh clicks may race; only the most recently started request may
   // update state, so a slow stale response can't overwrite a fresh one.
   const requestVersion = useRef(0);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Close on Escape.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Dialog focus trap + Escape + focus restore.
+  useModalA11y(containerRef, onClose);
 
   /* Render the QR + URLs from a fresh ServerInfo payload. */
   const applyInfo = useCallback((info: ServerInfo) => {
@@ -59,7 +64,7 @@ export default function QrModal({ onClose }: Props) {
     }
     setError(null);
     try {
-      const matrix = encodeQR(chosen);
+      const matrix = encodeQR(withKeyFragment(chosen));
       const rawSvg = renderQRToSvg(matrix, { dark: "#111827", light: "#ffffff" });
       const clean = DOMPurify.sanitize(rawSvg, {
         USE_PROFILES: { svg: true, svgFilters: true },
@@ -75,7 +80,7 @@ export default function QrModal({ onClose }: Props) {
     const version = ++requestVersion.current;
     (async () => {
       try {
-        const res = await fetch("/api/info");
+        const res = await fetch("/api/info", { headers: authHeaders() });
         if (!res.ok) throw new Error(`info ${res.status}`);
         const info: ServerInfo = await res.json();
         if (requestVersion.current === version) applyInfo(info);
@@ -98,7 +103,10 @@ export default function QrModal({ onClose }: Props) {
     setRefreshing(true);
     setRefreshError(null);
     try {
-      const res = await fetch("/api/network/refresh", { method: "POST" });
+      const res = await fetch("/api/network/refresh", {
+        method: "POST",
+        headers: authHeaders(),
+      });
       if (!res.ok) throw new Error(`refresh ${res.status}`);
       const info: ServerInfo = await res.json();
       if (requestVersion.current === version) applyInfo(info);
@@ -117,7 +125,12 @@ export default function QrModal({ onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl dark:border dark:border-gray-800 dark:bg-gray-900"
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Scan to open on another device"
+        tabIndex={-1}
+        className="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl outline-hidden dark:border dark:border-gray-800 dark:bg-gray-900"
         onClick={(e) => e.stopPropagation()}
       >
         <button

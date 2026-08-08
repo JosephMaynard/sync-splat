@@ -8,14 +8,40 @@ import {
 } from "@heroicons/react/24/outline";
 import { socket } from "./socket";
 import { getTheme, toggleTheme, watchSystemTheme, type Theme } from "./theme";
-import type { Item, ServerInfo } from "../shared/types";
+import type { ActionAck, Item, ServerInfo, ServerInfoLocked } from "../shared/types";
 import { LIMITS } from "../shared/types";
 import HistoryItem from "./HistoryItem";
 import Compose from "./Compose";
 import QrModal from "./QrModal";
 import ShareBrowser from "./ShareBrowser";
+import PasscodePrompt from "./PasscodePrompt";
 import Logo from "./Logo";
 import { humanSize } from "./util";
+import { authHeaders, setToken } from "./auth";
+import { uploadWithProgress } from "./upload";
+
+/** Result of a broadcast: whether the (optional) text send succeeded. */
+export interface BroadcastResult {
+  textOk: boolean;
+  textError?: string;
+}
+
+/** Error string carried by a rejected ActionAck. */
+type AckError = Extract<ActionAck, { ok: false }>["error"];
+
+/** Human-readable message for a rejected action ack. */
+function messageForAck(error: AckError): string {
+  switch (error) {
+    case "too-big":
+      return "Too big to send. Try attaching it as a file instead.";
+    case "rate-limited":
+      return "You're sending too fast — wait a moment and try again.";
+    case "not-found":
+      return "That item no longer exists.";
+    default:
+      return "The server rejected that message.";
+  }
+}
 
 /** Client-local id for staged attachments. crypto.randomUUID is unavailable
  *  in insecure contexts (http:// on a phone — our primary use case). */
@@ -53,9 +79,21 @@ export default function App() {
   const [theme, setThemeState] = useState<Theme>(getTheme);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
+  // Per-attachment upload progress, keyed by localId, in [0, 1].
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>(
+    {},
+  );
+  // Auth gate: "checking" until /api/info answers; "locked" shows the passcode
+  // prompt; "ok" boots the app and connects the socket.
+  const [authState, setAuthState] = useState<"checking" | "ok" | "locked">(
+    "checking",
+  );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+  // True once we know the server has a passcode — used to interpret a socket
+  // connect_error as "key rejected" rather than a transient network blip.
+  const authRequiredRef = useRef(false);
 
   /* revoke any outstanding object URLs when the app unmounts */
   const attachmentsRef = useRef(attachments);
@@ -78,24 +116,83 @@ export default function App() {
     setThemeState(toggleTheme());
   }, []);
 
-  /* socket lifecycle */
+  /* Fetch /api/info: resolve the auth gate and (when unlocked) the limits.
+   * A locked payload (authRequired with no full body) means we need a key. A
+   * network failure isn't an auth problem, so we still boot with defaults. */
+  const loadInfo = useCallback(async (): Promise<"ok" | "locked"> => {
+    try {
+      const res = await fetch("/api/info", { headers: authHeaders() });
+      if (!res.ok) return "locked";
+      const info: ServerInfo | ServerInfoLocked = await res.json();
+      if (info.authRequired && !("maxFileBytes" in info)) {
+        authRequiredRef.current = true;
+        return "locked";
+      }
+      const full = info as ServerInfo;
+      authRequiredRef.current = full.authRequired;
+      setMaxFileBytes(full.maxFileBytes);
+      setMaxTextBytes(full.maxTextBytes);
+      setShare(full.share);
+      return "ok";
+    } catch {
+      // Can't reach /api/info — not an auth failure; boot with defaults rather
+      // than trapping the user behind a prompt they can't satisfy.
+      return "ok";
+    }
+  }, []);
+
+  /* Resolve the auth gate on boot. */
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const r = await loadInfo();
+      if (!cancelled) setAuthState(r);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadInfo]);
+
+  /* Store the entered passcode and retry. Returns false if still rejected. */
+  const retryAuth = useCallback(
+    async (token: string): Promise<boolean> => {
+      setToken(token);
+      const r = await loadInfo();
+      if (r === "ok") {
+        setAuthState("ok");
+        return true;
+      }
+      return false;
+    },
+    [loadInfo],
+  );
+
+  /* socket lifecycle — only after the auth gate is open. */
+  useEffect(() => {
+    if (authState !== "ok") return;
+
     const onHistory = (items: Item[]) => setHistory(items);
     const onNew = (item: Item) => setHistory((prev) => [item, ...prev]);
     const onDeleted = (id: string) =>
       setHistory((prev) => prev.filter((it) => it.id !== id));
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
+    const onConnectError = () => {
+      // With a passcode in play, a rejected handshake means the key is bad —
+      // fall back to the passcode prompt. Otherwise it's a transient blip that
+      // socket.io retries on its own.
+      if (authRequiredRef.current) setAuthState("locked");
+    };
 
     socket.on("history", onHistory);
     socket.on("item:new", onNew);
     socket.on("item:deleted", onDeleted);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
+    socket.on("connect_error", onConnectError);
 
     // Connect only after every listener is wired: the server emits `history`
     // the moment the connection lands, and events with no listener are lost.
-    // (autoConnect is off, so the socket cannot already be connected here.)
     socket.connect();
 
     return () => {
@@ -104,29 +201,12 @@ export default function App() {
       socket.off("item:deleted", onDeleted);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
+      socket.off("connect_error", onConnectError);
       // Disconnect so a remount (StrictMode, HMR) reconnects fresh and
       // receives a new history snapshot instead of a listenerless socket.
       socket.disconnect();
     };
-  }, []);
-
-  /* fetch limits so we can pre-check file sizes */
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/info")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((info: ServerInfo | null) => {
-        if (!cancelled && info) {
-          setMaxFileBytes(info.maxFileBytes);
-          setMaxTextBytes(info.maxTextBytes);
-          setShare(info.share);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [authState]);
 
   /* auto-dismiss upload errors */
   useEffect(() => {
@@ -135,43 +215,70 @@ export default function App() {
     return () => clearTimeout(t);
   }, [uploadError]);
 
-  const sendText = useCallback((html: string) => {
-    socket.emit("text:send", { html });
-  }, []);
+  /* Emit text and await the server ack so we can surface rejections (too-big /
+   * rate-limited / invalid) instead of silently assuming success. A timeout
+   * (old server with no ack) is treated as delivered — the prior behavior. */
+  const sendText = useCallback(
+    (html: string): Promise<{ ok: boolean; error?: string }> =>
+      new Promise((resolve) => {
+        let settled = false;
+        const done = (r: { ok: boolean; error?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(r);
+        };
+        // No ack within the window (e.g. an older server): treat as delivered,
+        // matching the prior fire-and-forget behavior rather than blocking.
+        const timer = setTimeout(() => done({ ok: true }), 8000);
+        socket.emit("text:send", { html }, (ack: ActionAck) => {
+          if (ack && ack.ok === false) {
+            done({ ok: false, error: messageForAck(ack.error) });
+          } else {
+            done({ ok: true });
+          }
+        });
+      }),
+    [],
+  );
 
   const deleteItem = useCallback((id: string) => {
-    socket.emit("item:delete", id);
+    // Pass a no-op ack so a not-found (already deleted elsewhere) can't throw.
+    socket.emit("item:delete", id, () => {});
   }, []);
 
-  /* Upload a single file. Size is pre-checked at add time. Returns success so
-   * the broadcast loop can stop on the first failure and leave items staged. */
-  const uploadFile = useCallback(async (file: File): Promise<boolean> => {
-    try {
-      const res = await fetch(
-        `/api/upload?name=${encodeURIComponent(file.name)}`,
-        {
-          method: "POST",
-          body: file,
-          headers: {
-            "Content-Type": file.type || "application/octet-stream",
+  /* Upload a single file via XHR for progress. Size is pre-checked at add
+   * time. Returns success so the broadcast loop can stop on the first failure
+   * and leave items staged. */
+  const uploadFile = useCallback(
+    async (file: File, localId: string): Promise<boolean> => {
+      try {
+        const res = await uploadWithProgress(
+          `/api/upload?name=${encodeURIComponent(file.name)}`,
+          file,
+          {
+            headers: authHeaders(),
+            onProgress: (fraction) =>
+              setUploadProgress((p) => ({ ...p, [localId]: fraction })),
           },
-        },
-      );
-      if (!res.ok) {
-        if (res.status === 413) {
-          setUploadError(`"${file.name}" is too big.`);
-        } else {
-          setUploadError(`Upload failed (${res.status}).`);
+        );
+        if (!res.ok) {
+          setUploadError(
+            res.status === 413
+              ? `"${file.name}" is too big.`
+              : `Upload failed (${res.status}).`,
+          );
+          return false;
         }
+        // On success the server broadcasts item:new — no local insert needed.
+        return true;
+      } catch {
+        setUploadError("Upload failed — is the server still running?");
         return false;
       }
-      // On success the server broadcasts item:new — no local insert needed.
-      return true;
-    } catch {
-      setUploadError("Upload failed — is the server still running?");
-      return false;
-    }
-  }, []);
+    },
+    [],
+  );
 
   /* Stage files as pending attachments (paste / drop / picker all land here).
    * Oversize files are rejected immediately with the friendly message. */
@@ -199,38 +306,56 @@ export default function App() {
     [maxFileBytes],
   );
 
-  const removeAttachment = useCallback((localId: string) => {
-    setAttachments((prev) => {
-      const target = prev.find((a) => a.localId === localId);
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
-      return prev.filter((a) => a.localId !== localId);
+  const clearProgress = useCallback((localId: string) => {
+    setUploadProgress((prev) => {
+      if (!(localId in prev)) return prev;
+      const { [localId]: _drop, ...rest } = prev;
+      return rest;
     });
   }, []);
 
-  /* Broadcast: emit text first (if any), then upload staged files one by one.
-   * Successful items are cleared as they go; on the first failure we stop and
-   * leave the failed item plus any not-yet-sent ones staged for a retry. */
+  const removeAttachment = useCallback(
+    (localId: string) => {
+      setAttachments((prev) => {
+        const target = prev.find((a) => a.localId === localId);
+        if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+        return prev.filter((a) => a.localId !== localId);
+      });
+      clearProgress(localId);
+    },
+    [clearProgress],
+  );
+
+  /* Broadcast: send text first (if any), then upload staged files one by one.
+   * If the text send is rejected we keep the box (Compose handles that) and
+   * don't touch the attachments. Uploaded items are cleared as they go; on the
+   * first upload failure we stop and leave the rest staged for a retry. */
   const broadcast = useCallback(
-    async (html: string | null): Promise<void> => {
-      if (html) sendText(html);
+    async (html: string | null): Promise<BroadcastResult> => {
+      if (html) {
+        const r = await sendText(html);
+        if (!r.ok) return { textOk: false, textError: r.error };
+      }
       const queued = attachments;
-      if (queued.length === 0) return;
+      if (queued.length === 0) return { textOk: true };
       setUploadError(null);
       setSending(true);
       try {
         for (const att of queued) {
-          const ok = await uploadFile(att.file);
+          const ok = await uploadFile(att.file, att.localId);
           if (!ok) break;
           if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
           setAttachments((prev) =>
             prev.filter((a) => a.localId !== att.localId),
           );
+          clearProgress(att.localId);
         }
       } finally {
         setSending(false);
       }
+      return { textOk: true };
     },
-    [attachments, sendText, uploadFile],
+    [attachments, sendText, uploadFile, clearProgress],
   );
 
   /* drag-and-drop onto the whole page */
@@ -289,6 +414,16 @@ export default function App() {
     return () => window.removeEventListener("paste", onPaste);
   }, [addAttachments]);
 
+  // Hold rendering until the auth gate resolves, then either prompt or boot.
+  if (authState === "checking") {
+    return (
+      <div className="min-h-screen bg-gray-100 dark:bg-gray-950" aria-hidden />
+    );
+  }
+  if (authState === "locked") {
+    return <PasscodePrompt onSubmit={retryAuth} />;
+  }
+
   return (
     <div className="min-h-screen bg-gray-100 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
       <header className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-gray-800 dark:bg-gray-900">
@@ -343,6 +478,7 @@ export default function App() {
             connected={connected}
             sending={sending}
             attachments={attachments}
+            uploadProgress={uploadProgress}
             maxTextBytes={maxTextBytes}
             onBroadcast={broadcast}
             onRemoveAttachment={removeAttachment}

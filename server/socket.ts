@@ -1,5 +1,6 @@
 import type { Server } from "socket.io";
 import type {
+  ActionAck,
   ClientToServerEvents,
   ServerToClientEvents,
 } from "../shared/types";
@@ -27,21 +28,51 @@ export function registerSocketHandlers(io: SyncSplatIO, store: HistoryStore): vo
     socket.emit("history", store.getHistory());
     const allow = createRateLimiter();
 
-    socket.on("text:send", (payload) => {
-      if (!allow()) return;
-      if (typeof payload !== "object" || payload === null) return;
+    socket.on("text:send", (payload, ack) => {
+      // Old clients pass no callback; only invoke a real function so the
+      // previous silent-drop behaviour is preserved.
+      const respond = (r: ActionAck) => {
+        if (typeof ack === "function") ack(r);
+      };
+      if (!allow()) {
+        respond({ ok: false, error: "rate-limited" });
+        return;
+      }
+      if (typeof payload !== "object" || payload === null) {
+        respond({ ok: false, error: "invalid" });
+        return;
+      }
       const html = (payload as { html?: unknown }).html;
-      if (typeof html !== "string") return;
-      if (Buffer.byteLength(html, "utf8") > LIMITS.maxTextBytes) return;
+      if (typeof html !== "string") {
+        respond({ ok: false, error: "invalid" });
+        return;
+      }
+      if (Buffer.byteLength(html, "utf8") > LIMITS.maxTextBytes) {
+        respond({ ok: false, error: "too-big" });
+        return;
+      }
       const item = store.addText(html);
       io.emit("item:new", item);
+      respond({ ok: true, id: item.id });
     });
 
-    socket.on("item:delete", (id) => {
-      if (!allow()) return;
-      if (typeof id !== "string") return;
+    socket.on("item:delete", (id, ack) => {
+      const respond = (r: ActionAck) => {
+        if (typeof ack === "function") ack(r);
+      };
+      if (!allow()) {
+        respond({ ok: false, error: "rate-limited" });
+        return;
+      }
+      if (typeof id !== "string") {
+        respond({ ok: false, error: "invalid" });
+        return;
+      }
       if (store.delete(id)) {
         io.emit("item:deleted", id);
+        respond({ ok: true, id });
+      } else {
+        respond({ ok: false, error: "not-found" });
       }
     });
   });

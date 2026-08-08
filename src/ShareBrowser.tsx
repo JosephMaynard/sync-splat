@@ -5,9 +5,13 @@ import {
   ArrowDownTrayIcon,
   ArrowUpTrayIcon,
   ChevronRightIcon,
+  EyeIcon,
 } from "@heroicons/react/24/outline";
 import type { ShareListing } from "../shared/types";
-import { humanSize, middleTruncate } from "./util";
+import { humanSize, middleTruncate, isPreviewable } from "./util";
+import { authHeaders, withKey } from "./auth";
+import { uploadWithProgress } from "./upload";
+import PreviewModal, { type PreviewTarget } from "./PreviewModal";
 
 interface Props {
   /** Root folder name (from /api/info share.name) — the first breadcrumb. */
@@ -28,6 +32,12 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // Current in-flight upload (name + [0,1] progress) for the progress bar.
+  const [uploadProgress, setUploadProgress] = useState<{
+    name: string;
+    fraction: number;
+  } | null>(null);
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
   // Bumped to force a re-fetch after an upload or a retry.
   const [reloadNonce, setReloadNonce] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -39,7 +49,9 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
    * effect body only writes state asynchronously (once the fetch settles). */
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/share/ls?path=${encodeURIComponent(rel)}`)
+    fetch(`/api/share/ls?path=${encodeURIComponent(rel)}`, {
+      headers: authHeaders(),
+    })
       .then((r) => {
         if (!r.ok) throw new Error(`ls ${r.status}`);
         return r.json();
@@ -111,15 +123,15 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
       setUploading(true);
       try {
         for (const f of valid) {
+          setUploadProgress({ name: f.name, fraction: 0 });
           try {
-            const res = await fetch(
+            const res = await uploadWithProgress(
               `/api/share/upload?dir=${encodeURIComponent(rel)}&name=${encodeURIComponent(f.name)}`,
+              f,
               {
-                method: "POST",
-                body: f,
-                headers: {
-                  "Content-Type": f.type || "application/octet-stream",
-                },
+                headers: authHeaders(),
+                onProgress: (fraction) =>
+                  setUploadProgress({ name: f.name, fraction }),
               },
             );
             if (!res.ok) {
@@ -139,6 +151,7 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
           );
         }
       } finally {
+        setUploadProgress(null);
         setUploading(false);
         reload();
       }
@@ -225,6 +238,25 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
         </p>
       )}
 
+      {uploadProgress && (
+        <div className="mb-3" aria-live="polite">
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <span className="truncate">
+              Uploading {middleTruncate(uploadProgress.name, 28)}
+            </span>
+            <span className="shrink-0 tabular-nums">
+              {Math.round(uploadProgress.fraction * 100)}%
+            </span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-[width] duration-150 dark:bg-blue-500"
+              style={{ width: `${Math.round(uploadProgress.fraction * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-500">
           Loading…
@@ -289,21 +321,53 @@ export default function ShareBrowser({ shareName, maxFileBytes }: Props) {
                     </p>
                   </div>
                 </div>
-                <a
-                  href={`/api/share/dl?path=${encodeURIComponent(
+                {(() => {
+                  const dlUrl = `/api/share/dl?path=${encodeURIComponent(
                     relPath([...path, entry.name]),
-                  )}`}
-                  download={entry.name}
-                  className="inline-flex shrink-0 items-center rounded-md bg-white px-2.5 py-2 text-gray-500 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-gray-700"
-                  title="Download"
-                >
-                  <span className="sr-only">Download {entry.name}</span>
-                  <ArrowDownTrayIcon className="size-5" aria-hidden="true" />
-                </a>
+                  )}`;
+                  const previewable = isPreviewable(entry.name, "");
+                  return (
+                    <span className="isolate inline-flex shrink-0 rounded-md shadow-sm">
+                      {previewable && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPreview({
+                              type: "file",
+                              name: entry.name,
+                              mime: "",
+                              url: dlUrl,
+                            })
+                          }
+                          className="relative inline-flex items-center rounded-l-md bg-white px-2.5 py-2 text-gray-500 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-gray-700"
+                          title="Preview"
+                        >
+                          <span className="sr-only">Preview {entry.name}</span>
+                          <EyeIcon className="size-5" aria-hidden="true" />
+                        </button>
+                      )}
+                      <a
+                        href={withKey(dlUrl)}
+                        download={entry.name}
+                        className={`relative inline-flex items-center bg-white px-2.5 py-2 text-gray-500 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-gray-700 ${
+                          previewable ? "-ml-px rounded-r-md" : "rounded-md"
+                        }`}
+                        title="Download"
+                      >
+                        <span className="sr-only">Download {entry.name}</span>
+                        <ArrowDownTrayIcon className="size-5" aria-hidden="true" />
+                      </a>
+                    </span>
+                  );
+                })()}
               </li>
             ),
           )}
         </ul>
+      )}
+
+      {preview && (
+        <PreviewModal target={preview} onClose={() => setPreview(null)} />
       )}
     </div>
   );

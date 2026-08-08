@@ -5,6 +5,7 @@ import { LIMITS } from "../shared/types";
 import type { HistoryStore } from "./store";
 import type { StaticHandler } from "./static";
 import { VERSION } from "./net";
+import { checkKey, requireKey } from "./auth";
 import { handleShareDl, handleShareLs, handleShareUpload } from "./share";
 import {
   UUID_RE,
@@ -14,6 +15,16 @@ import {
   sendJson,
   sendStatus,
 } from "./util";
+
+/**
+ * Cap on the total bytes buffered across all concurrent /api/upload requests.
+ * A single file is already capped at maxFileBytes, but many uploads at once
+ * could still exhaust memory; this bounds the aggregate. Kept as a local const
+ * (deliberately not in shared/types, which is the client contract) and set to
+ * the same ceiling as the in-memory store so a burst can never buffer more than
+ * the store would ever hold. Share uploads stream to disk, so they are exempt.
+ */
+const MAX_IN_FLIGHT_BYTES = LIMITS.maxTotalFileBytes;
 
 export interface RequestHandlerOptions {
   store: HistoryStore;
@@ -34,6 +45,9 @@ export interface RequestHandlerOptions {
   /** Reprint the startup banner + QR with fresh URLs. Only wired when the
    *  server was started with banner:true; otherwise undefined (a no-op). */
   onNetworkRefresh?: () => void;
+  /** Passcode gating every /api/* route except /api/info. null (the default)
+   *  means no passcode: all checks pass and behaviour is unchanged. */
+  token: string | null;
 }
 
 export type RequestHandler = (
@@ -52,9 +66,25 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     shareDir,
     getMdnsUrl,
     onNetworkRefresh,
+    token,
   } = opts;
 
-  function handleInfo(res: ServerResponse): void {
+  // Total bytes buffered across concurrent /api/upload requests right now.
+  // Guards against many simultaneous uploads exhausting memory even though each
+  // one is individually under maxFileBytes.
+  let inFlightBytes = 0;
+
+  function handleInfo(req: IncomingMessage, res: ServerResponse): void {
+    // /api/info always answers 200. With a passcode set and no valid key, only
+    // the locked payload (name/version/authRequired) is revealed.
+    if (token !== null && !checkKey(req, token)) {
+      sendJson(res, 200, {
+        name: "sync-splat",
+        version: VERSION,
+        authRequired: true,
+      });
+      return;
+    }
     sendJson(res, 200, {
       name: "sync-splat",
       version: VERSION,
@@ -63,6 +93,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       share: shareDir ? { name: path.basename(shareDir) } : null,
       maxFileBytes,
       maxTextBytes: LIMITS.maxTextBytes,
+      authRequired: token !== null,
     });
   }
 
@@ -84,9 +115,37 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     };
 
     const contentLength = Number(req.headers["content-length"]);
-    if (Number.isFinite(contentLength) && contentLength > maxFileBytes) {
+    const hasLength = Number.isFinite(contentLength);
+    if (hasLength && contentLength > maxFileBytes) {
       rejectTooLarge();
       return;
+    }
+
+    // Reserve against the aggregate memory budget. With a known Content-Length
+    // we reserve up front (and reject before reading a byte); a chunked body
+    // with no length reserves incrementally as data arrives. `reserved` is what
+    // we've added to inFlightBytes so release() always balances exactly, even
+    // on abort.
+    let reserved = 0;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      inFlightBytes -= reserved;
+    };
+    const rejectBusy = () => {
+      release();
+      res.once("finish", () => req.destroy());
+      sendJson(res, 503, { error: "server busy" });
+    };
+
+    if (hasLength) {
+      if (inFlightBytes + contentLength > MAX_IN_FLIGHT_BYTES) {
+        rejectBusy();
+        return;
+      }
+      reserved = contentLength;
+      inFlightBytes += contentLength;
     }
 
     const chunks: Buffer[] = [];
@@ -98,6 +157,77 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       total += chunk.length;
       if (total > maxFileBytes) {
         aborted = true;
+        release();
+        rejectTooLarge();
+        return;
+      }
+      if (!hasLength) {
+        reserved += chunk.length;
+        inFlightBytes += chunk.length;
+        if (inFlightBytes > MAX_IN_FLIGHT_BYTES) {
+          aborted = true;
+          rejectBusy();
+          return;
+        }
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      release();
+      if (aborted) return;
+      const buffer = Buffer.concat(chunks, total);
+      const item = store.addFile(name, mime, buffer);
+      onItemCreated(item);
+      sendJson(res, 201, item);
+    });
+
+    req.on("error", () => {
+      release();
+      if (aborted || res.headersSent) return;
+      aborted = true;
+      sendStatus(res, 400, "Bad request");
+    });
+
+    // A client that vanishes mid-upload emits "close" without "end"; release the
+    // reservation so aborted uploads don't leak the budget. Idempotent, so it is
+    // harmless after a normal end/error.
+    req.on("close", release);
+  }
+
+  /**
+   * POST /api/text — post a text splat over plain HTTP (for the CLI and other
+   * non-browser clients). Accepts a raw UTF-8 body (Content-Type text/plain or
+   * anything non-JSON) as the html, or a JSON body `{html}`. Validated exactly
+   * like the socket text:send path: a string within maxTextBytes, else 413.
+   */
+  function handleText(req: IncomingMessage, res: ServerResponse): void {
+    const type = (req.headers["content-type"] ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    const isJson = type === "application/json";
+
+    const rejectTooLarge = () => {
+      res.once("finish", () => req.destroy());
+      sendJson(res, 413, { error: "text too large" });
+    };
+
+    const contentLength = Number(req.headers["content-length"]);
+    if (Number.isFinite(contentLength) && contentLength > LIMITS.maxTextBytes) {
+      rejectTooLarge();
+      return;
+    }
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let aborted = false;
+
+    req.on("data", (chunk: Buffer) => {
+      if (aborted) return;
+      total += chunk.length;
+      if (total > LIMITS.maxTextBytes) {
+        aborted = true;
         rejectTooLarge();
         return;
       }
@@ -106,8 +236,31 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
 
     req.on("end", () => {
       if (aborted) return;
-      const buffer = Buffer.concat(chunks, total);
-      const item = store.addFile(name, mime, buffer);
+      const raw = Buffer.concat(chunks, total).toString("utf8");
+      let html: string;
+      if (isJson) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          const candidate = (parsed as { html?: unknown } | null)?.html;
+          if (typeof candidate !== "string") {
+            sendJson(res, 400, { error: "invalid" });
+            return;
+          }
+          html = candidate;
+        } catch {
+          sendJson(res, 400, { error: "invalid" });
+          return;
+        }
+      } else {
+        html = raw;
+      }
+      // The JSON `html` string could still be over the cap even when the raw
+      // body was under it, so re-check the byte length of the final value.
+      if (Buffer.byteLength(html, "utf8") > LIMITS.maxTextBytes) {
+        sendJson(res, 413, { error: "text too large" });
+        return;
+      }
+      const item = store.addText(html);
       onItemCreated(item);
       sendJson(res, 201, item);
     });
@@ -156,7 +309,9 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 405, "Method not allowed");
         return;
       }
-      handleInfo(res);
+      // Never gated: always 200, but the body is the locked payload when a
+      // passcode is set and the caller has no valid key (handled inside).
+      handleInfo(req, res);
       return;
     }
 
@@ -174,7 +329,33 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 403, "Cross-origin requests are not allowed");
         return;
       }
+      if (!requireKey(req, res, token)) return;
       handleUpload(req, res, url.searchParams);
+      return;
+    }
+
+    if (pathname === "/api/text") {
+      if (req.method !== "POST") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      if (!isAllowedOrigin(req.headers.origin, getAllowedHostnames())) {
+        res.once("finish", () => req.destroy());
+        sendStatus(res, 403, "Cross-origin requests are not allowed");
+        return;
+      }
+      if (!requireKey(req, res, token)) return;
+      handleText(req, res);
+      return;
+    }
+
+    if (pathname === "/api/history") {
+      if (req.method !== "GET") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      if (!requireKey(req, res, token)) return;
+      sendJson(res, 200, store.getHistory());
       return;
     }
 
@@ -188,10 +369,11 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 403, "Cross-origin requests are not allowed");
         return;
       }
+      if (!requireKey(req, res, token)) return;
       // Reprint the banner (fresh URLs re-enumerated inside) when running with
       // a banner, then answer with the same payload as /api/info.
       onNetworkRefresh?.();
-      handleInfo(res);
+      handleInfo(req, res);
       return;
     }
 
@@ -204,6 +386,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 405, "Method not allowed");
         return;
       }
+      if (!requireKey(req, res, token)) return;
       handleShareLs(res, shareDir, url.searchParams.get("path") ?? "").catch(
         () => sendStatus(res, 500, "Internal server error"),
       );
@@ -219,6 +402,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 405, "Method not allowed");
         return;
       }
+      if (!requireKey(req, res, token)) return;
       handleShareDl(
         res,
         shareDir,
@@ -242,6 +426,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 403, "Cross-origin requests are not allowed");
         return;
       }
+      if (!requireKey(req, res, token)) return;
       handleShareUpload(
         req,
         res,
@@ -258,6 +443,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         sendStatus(res, 405, "Method not allowed");
         return;
       }
+      if (!requireKey(req, res, token)) return;
       handleDownload(res, pathname.slice("/api/file/".length));
       return;
     }
