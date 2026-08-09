@@ -8,7 +8,8 @@
 // captured streams.
 
 import { createReadStream, createWriteStream } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
+import { rename, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -311,11 +312,20 @@ function htmlToText(html: string): string {
     },
   );
   s = s.replace(/\r\n?/g, "\n");
-  // Strip terminal control bytes (ESC, BEL, other C0/C1) so captured text
-  // can't drive the receiving terminal via OSC/CSI sequences when printed.
-  // Tab (\x09) and newline (\x0a) are kept.
-  // eslint-disable-next-line no-control-regex
-  s = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+  // Neutralise terminal escape sequences so captured text can't drive the
+  // receiving terminal when printed. First remove COMPLETE sequences —
+  // payload included — for OSC (ESC ] … BEL/ST) and CSI/other Fe escapes, so
+  // nothing like "]0;title" is left behind; then drop any remaining lone
+  // control bytes. Tab (\x09) and newline (\x0a) are preserved.
+  s = s
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC … BEL/ST
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "") // CSI
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[@-Z\\-_]/g, "") // other two-byte Fe escapes
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ""); // lone controls
   return s.trim();
 }
 
@@ -555,8 +565,24 @@ async function cmdGet(args: string[], io: CliIO): Promise<number> {
     dl.body as unknown as Parameters<typeof Readable.fromWeb>[0],
   );
   if (flags.out) {
-    await pipeline(source, createWriteStream(flags.out));
+    // Stream to a temp file in the same directory, then rename on success, so a
+    // failed/partial download never clobbers an existing destination.
+    const tmp = `${flags.out}.sync-splat-${randomUUID()}.part`;
+    try {
+      await pipeline(source, createWriteStream(tmp));
+      await rename(tmp, flags.out);
+    } catch (err) {
+      await unlink(tmp).catch(() => {});
+      throw err;
+    }
   } else {
+    // Refuse to spray raw bytes at an interactive terminal, which would garble
+    // it; a redirect/pipe (non-TTY) streams fine.
+    if ((io.stdout as Partial<{ isTTY: boolean }>).isTTY) {
+      throw new CliError(
+        "refusing to write binary to the terminal — use --out <path> or redirect",
+      );
+    }
     // Stream to stdout with backpressure so a large file isn't buffered whole;
     // end:false leaves the shared stdout open for the caller.
     await pipeline(source, io.stdout, { end: false });

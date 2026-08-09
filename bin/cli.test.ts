@@ -151,16 +151,24 @@ describe("runCli send/history/get", () => {
     await start();
     const ESC = "\x1b";
     const BEL = "\x07";
-    // An OSC title-change sequence must not survive to the terminal.
-    const send = makeIO(`${ESC}]0;PWNED${BEL}hello`);
-    expect(await runCli(["send", "--url", baseUrl], send.io)).toBe(0);
+    // Inject raw control bytes straight into the store (bypassing the CLI's own
+    // send-side sanitiser) to exercise get's hardening on the READ path — the
+    // defense that matters for text posted by other, untrusted clients.
+    await fetch(`${baseUrl}/api/text`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: `${ESC}]0;PWNED${BEL}hello`,
+    });
 
     const got = makeIO();
     await runCli(["get", "0", "--url", baseUrl], got.io);
     const out = got.outText();
     expect(out).not.toContain(ESC);
     expect(out).not.toContain(BEL);
-    expect(out).toContain("hello");
+    // The whole OSC sequence is removed, payload included — not just the
+    // control bytes — so no "PWNED" remnant survives.
+    expect(out).not.toContain("PWNED");
+    expect(out.trim()).toBe("hello");
   });
 });
 
