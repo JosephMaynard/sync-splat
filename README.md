@@ -22,6 +22,8 @@ Everything lives in memory and disappears when you stop the server. There is no 
 - **Rich text.** Paste formatted text; it is sanitized and broadcast to everyone instantly.
 - **Files.** Drag‑and‑drop, pick, or paste a screenshot — files stage as previews in the compose box and send when you broadcast. Images preview inline; everything else downloads.
 - **Shared folder.** By default the directory you launch from is browsable from any device on the network — download files and upload new ones straight to disk. Point it elsewhere with `--share`, or turn it off with `--no-share`. Dotfiles are never listed or served.
+- **Optional passcode.** Start with `--pin` to require a short passcode on every read and write. It rides along in the QR/URL fragment, so a phone scan still just works, and non‑browser clients pass it with `--key`.
+- **Terminal client.** Talk to a running server without a browser: `sync-splat send`, `history`, and `get` push and pull text and files straight from the shell.
 - **Live sync.** History is shared over WebSockets — new items appear everywhere at once.
 - **Zero runtime dependencies to speak of.** The server is `node:http` + [socket.io]; the QR encoder is hand‑rolled. No Express, no CORS shims.
 - **Ephemeral & private.** In‑memory only, same‑origin only, MIT licensed.
@@ -42,12 +44,15 @@ Then open the printed **Local** URL on this machine, or the **Network** URL (or 
 | `--max-file-size <MB>` | `20` | Maximum size of a single upload, in megabytes. |
 | `--share <path>` | current dir | Folder to share for browse/upload. Must be an existing directory. |
 | `--no-share` | | Disable folder sharing entirely. |
+| `--pin [value]` | off | Require a passcode. With no value one is generated; `--pin <value>` sets your own. Embedded in the printed URLs/QR. See [Passcode](#passcode). |
 | `-h, --help` | | Show usage. |
 
 ```bash
 sync-splat --port 8080 --max-file-size 50
 sync-splat --share ~/Downloads
 sync-splat --no-share
+sync-splat --pin                 # generate a passcode
+sync-splat --pin hunter2         # set your own
 PORT=4000 sync-splat
 ```
 
@@ -68,11 +73,51 @@ sync-splat serves a folder over the network, a bit like `python -m http.server` 
 - **Upload** new files into any folder from the app. Uploads **never overwrite**: if a name is taken, sync-splat inserts a space and appends `(1)`, `(2)`, … before the extension.
 - **Dotfiles stay private.** Entries whose name starts with `.` — and any directory named that way — are never listed, downloaded, or written to, so `.env`, `.git`, and friends don't leak. Symlinks that lead outside the shared folder are not followed.
 
+## Passcode
+
+By default sync-splat has no passcode — anyone who can reach the port can read and post. Start with `--pin` to require a short passcode instead.
+
+```bash
+sync-splat --pin            # generates a short passcode and prints it
+sync-splat --pin hunter2    # use your own
+```
+
+- **It gates reads *and* writes.** With a passcode set, every API route and the real‑time socket require the key. The only exceptions are `GET /api/info` (which returns just the name, version, and "a passcode is required" flag until you authenticate) and the static app shell itself — the page has to load before it can prompt you for the passcode. All actual data sits behind the key.
+- **The QR/URLs carry it for you.** The passcode is appended to the printed URLs and the terminal QR as a `#k=<passcode>` fragment, so scanning with your phone authenticates automatically. The fragment stays in the browser and is never sent to the server or written to its logs; the client stores it (and a matching cookie so image/download links work) and strips it from the address bar.
+- **Non‑browser clients** pass it with `--key`/`$SYNC_SPLAT_KEY` (see below) or an `X-Splat-Key` header.
+- **It is a real access gate, not encryption.** The comparison is constant‑time, but traffic is still plain HTTP. A passcode keeps out people who don't have it; it does **not** protect the contents in transit. The trusted‑network caveat below still applies — this is not TLS.
+
+## Terminal client
+
+The same `sync-splat` binary can act as a client to a server that's already running — handy for scripting or when you don't want a browser tab.
+
+```bash
+sync-splat send "quick note"                 # post text
+echo "piped" | sync-splat send               # text from stdin
+sync-splat send ./screenshot.png             # upload a file
+sync-splat history                           # list recent items (indexed)
+sync-splat get 2                             # print text, or stream a file…
+sync-splat get 2 > out.png                   # …to a file
+```
+
+Point it at a non‑default server and pass a passcode as needed:
+
+```bash
+sync-splat history --url http://192.168.1.23:3011 --key hunter2
+export SYNC_SPLAT_URL=http://192.168.1.23:3011
+export SYNC_SPLAT_KEY=hunter2
+sync-splat send "no more flags"
+```
+
+`--url` (default `http://localhost:3011`) and `--key` also read from `$SYNC_SPLAT_URL` and `$SYNC_SPLAT_KEY`; a URL containing a `#k=`/`?k=` passcode is accepted too, and the CLI strips the key out of the URL before sending it — it only ever travels in the `X-Splat-Key` header. Run `sync-splat send --help` for the full client reference.
+
+> **Passcode in browser links.** The web app authenticates fetches and the socket with a header, but plain `<a href>` download links and `<img>` preview URLs can't set headers, so the browser appends the passcode as a `?k=<passcode>` query param (a `splat-key` cookie is set too as a backstop). That means the passcode can appear in browser history and in any server/proxy access logs that record query strings. On a trusted LAN with no proxy in between this is a non-issue; if it matters to you, treat the passcode as low-secrecy and rotate it by restarting with a new `--pin`.
+
 ## Security model
 
 **Read this before using it anywhere sensitive.** sync-splat is built for convenience on a network you already trust, not for the open internet.
 
-- **No authentication. No encryption.** It serves over plain HTTP. Anyone who can reach the port — that is, anyone on the same LAN — can read the shared history *and* post to it.
+- **Optional passcode, no encryption.** By default there is no authentication: anyone who can reach the port — that is, anyone on the same LAN — can read the shared history *and* post to it. Starting with [`--pin`](#passcode) adds a real access gate: every read and write then needs the passcode (checked in constant time). Either way it always serves over plain **HTTP** — a passcode controls *who* gets in but does not encrypt what flows over the wire. It is not a substitute for TLS.
 - **Same-origin enforced.** The server serves the client and the socket from one origin and sets no CORS headers. On top of that it validates the `Origin` header on uploads and on every socket handshake against the machine's own addresses (localhost + its interface IPs — not the spoofable `Host` header, so DNS rebinding doesn't bypass it). A hostile web page you happen to visit can't write to your history or read it over a WebSocket. Requests without an `Origin` — curl and other non-browser clients — are allowed. None of this is a substitute for auth.
 - **Text is sanitized.** Shared HTML is sanitized (with DOMPurify) before it is rendered, to prevent stored‑XSS between clients.
 - **Files are download-only.** Uploads are served with `X-Content-Type-Options: nosniff` and, for anything that isn't a common raster image, as `application/octet-stream` with a `Content-Disposition: attachment`. Only the image types in the allow‑list (PNG, JPEG, GIF, WebP, AVIF) are served inline for thumbnails. SVG is deliberately treated as a download because it can contain script.

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clickable } from "./banner";
+import { clickable, withAuthFragment } from "./banner";
+// The real client-side parser lives in shared/types (DOM-free), so the
+// round-trip is validated against production code, not a copy.
+import { parseTokenFromHash } from "../shared/types";
 
 const URL = "http://192.168.1.5:3011";
 const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -39,5 +42,26 @@ describe("clickable", () => {
     expect(out).toContain(`]8;;${URL}`); // link open
     expect(out).toContain("]8;;"); // link close
     expect(out).toContain(URL); // visible text intact
+  });
+});
+
+describe("withAuthFragment", () => {
+  const URL = "http://192.168.1.5:3011";
+
+  it("returns the URL unchanged when there is no passcode", () => {
+    expect(withAuthFragment(URL, null)).toBe(URL);
+  });
+
+  it("appends a #k= fragment for a simple token", () => {
+    expect(withAuthFragment(URL, "abc123")).toBe(`${URL}/#k=abc123`);
+  });
+
+  it("percent-encodes special characters and round-trips via the client parser", () => {
+    for (const token of ["a&b", "a b", "50%off", "a#b", "a=b", "π"]) {
+      const url = withAuthFragment(URL, token);
+      const hash = url.slice(url.indexOf("#"));
+      // The client's parseTokenFromHash must recover exactly what we embedded.
+      expect(parseTokenFromHash(hash)).toBe(token);
+    }
   });
 });

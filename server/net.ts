@@ -1,8 +1,11 @@
 import os from "node:os";
 
-/** Package version. Hardcoded because esbuild bundling makes reading
- *  package.json at runtime unreliable. Keep in sync with package.json. */
-export const VERSION = "0.2.0";
+/** Injected at build time from package.json by scripts/build-server.mjs, so
+ *  the version lives in exactly one place. "dev" under vitest/tsc, which run
+ *  the TypeScript directly with no define step. */
+declare const __VERSION__: string | undefined;
+export const VERSION =
+  typeof __VERSION__ === "string" ? __VERSION__ : "dev";
 
 /**
  * Hostnames a browser Origin may legitimately carry when talking to this

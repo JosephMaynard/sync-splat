@@ -5,17 +5,20 @@ import {
   DocumentIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
-import type { PendingAttachment } from "./App";
+import type { BroadcastResult, PendingAttachment } from "./App";
 import { humanSize, middleTruncate } from "./util";
 
 interface Props {
   connected: boolean;
   sending: boolean;
   attachments: PendingAttachment[];
+  /** Per-attachment upload progress in [0, 1], keyed by localId. */
+  uploadProgress: Record<string, number>;
   /** Server's max text broadcast size in UTF-8 bytes (from /api/info). */
   maxTextBytes: number;
-  /** Emit text (null when the box is empty), then upload staged attachments. */
-  onBroadcast: (html: string | null) => void | Promise<void>;
+  /** Send text (null when empty), then upload staged attachments; the result
+   *  reports whether the text send was accepted so we know whether to clear. */
+  onBroadcast: (html: string | null) => Promise<BroadcastResult>;
   onRemoveAttachment: (localId: string) => void;
 }
 
@@ -23,53 +26,63 @@ export default function Compose({
   connected,
   sending,
   attachments,
+  uploadProgress,
   maxTextBytes,
   onBroadcast,
   onRemoveAttachment,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [empty, setEmpty] = useState(true);
-  const [tooBig, setTooBig] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const hasAttachments = attachments.length > 0;
-  const disabled = sending || !connected || (empty && !hasAttachments);
+  const disabled = busy || sending || !connected || (empty && !hasAttachments);
 
   const syncEmpty = () => {
     const el = ref.current;
     setEmpty(!el || el.textContent?.trim() === "");
-    setTooBig(null);
+    setSendError(null);
   };
 
-  const broadcast = () => {
+  const broadcast = async () => {
     const el = ref.current;
     if (!el || disabled) return;
     const hasText = el.textContent?.trim() !== "";
     const html = hasText ? el.innerHTML : null;
-    // The server silently drops oversize text — check before clearing the
-    // box so the user's content is never lost.
+    // Pre-check size before sending so the user's content is never lost.
     if (html) {
       const bytes = new TextEncoder().encode(html).length;
       if (bytes > maxTextBytes) {
-        setTooBig(
+        setSendError(
           `Too big to send (${humanSize(bytes)} — the limit is ${humanSize(maxTextBytes)}). Try attaching it as a file instead.`,
         );
         return;
       }
     }
-    // Clear the box up front: the text is emitted synchronously, so a retry
-    // after a failed attachment upload must not re-send it.
-    if (hasText) {
-      el.innerHTML = "";
-      setEmpty(true);
+    setSendError(null);
+    setBusy(true);
+    try {
+      const result = await onBroadcast(html);
+      if (hasText) {
+        if (result.textOk) {
+          // Clear only after the server accepts the text, so a rejection
+          // (too-big / rate-limited) leaves the content in place to retry.
+          el.innerHTML = "";
+          setEmpty(true);
+        } else {
+          setSendError(result.textError ?? "The server rejected that message.");
+        }
+      }
+    } finally {
+      setBusy(false);
     }
-    setTooBig(null);
-    void onBroadcast(html);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
-      broadcast();
+      void broadcast();
     }
   };
 
@@ -121,18 +134,20 @@ export default function Compose({
         className="min-h-40 flex-1 overflow-auto rounded-lg border border-gray-300 bg-white p-4 text-gray-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-200 empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-500/30 dark:empty:before:text-gray-500"
       />
 
-      {tooBig && (
+      {sendError && (
         <p
           role="alert"
           className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
         >
-          {tooBig}
+          {sendError}
         </p>
       )}
 
       {hasAttachments && (
         <ul className="mt-3 flex flex-wrap gap-2">
-          {attachments.map((att) => (
+          {attachments.map((att) => {
+            const pct = uploadProgress[att.localId];
+            return (
             <li key={att.localId} className="relative">
               {att.previewUrl ? (
                 <img
@@ -155,6 +170,23 @@ export default function Compose({
                   </span>
                 </div>
               )}
+              {typeof pct === "number" && (
+                <div
+                  className="absolute inset-x-1 bottom-1"
+                  role="progressbar"
+                  aria-label={`Uploading ${att.file.name}`}
+                  aria-valuenow={Math.round(pct * 100)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/30 backdrop-blur-sm dark:bg-white/20">
+                    <div
+                      className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
+                      style={{ width: `${Math.round(pct * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => onRemoveAttachment(att.localId)}
@@ -166,7 +198,8 @@ export default function Compose({
                 <XMarkIcon className="size-4" aria-hidden="true" />
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
 
@@ -184,7 +217,7 @@ export default function Compose({
         </span>
         <button
           type="button"
-          onClick={broadcast}
+          onClick={() => void broadcast()}
           disabled={disabled}
           className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-blue-500 dark:hover:bg-blue-400"
         >

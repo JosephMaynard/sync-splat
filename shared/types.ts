@@ -32,6 +32,10 @@ export interface ServerInfo {
   share: { name: string } | null;
   maxFileBytes: number;
   maxTextBytes: number;
+  /** True when a passcode is set. When true, the caller reaching this full
+   *  payload has already presented a valid key (unauthenticated callers get
+   *  ServerInfoLocked instead). Always present; false when no passcode. */
+  authRequired: boolean;
 }
 
 /** One entry in a shared-folder listing. */
@@ -49,6 +53,12 @@ export interface ShareListing {
   entries: ShareEntry[];
 }
 
+/** Acknowledgement for client→server actions. Optional on the wire — old
+ *  clients that pass no callback keep the previous silent-drop behavior. */
+export type ActionAck =
+  | { ok: true; id: string }
+  | { ok: false; error: "invalid" | "too-big" | "rate-limited" | "not-found" };
+
 export interface ServerToClientEvents {
   history: (items: Item[]) => void;
   "item:new": (item: Item) => void;
@@ -56,11 +66,62 @@ export interface ServerToClientEvents {
 }
 
 export interface ClientToServerEvents {
-  "text:send": (payload: { html: string }) => void;
-  "item:delete": (id: string) => void;
+  "text:send": (payload: { html: string }, ack?: (r: ActionAck) => void) => void;
+  "item:delete": (id: string, ack?: (r: ActionAck) => void) => void;
 }
 
+/** Auth transport when a passcode is set (see AUTH):
+ *  - HTTP: `X-Splat-Key` header, or the `splat-key` cookie (for <a>/<img>).
+ *  - socket.io: `auth: { token }` in the handshake (cookie also accepted).
+ *  - QR/share links carry it in the URL fragment: http://host:port/#k=TOKEN
+ *    (fragments never reach the server or its logs; the client stores the
+ *    token and strips the fragment). */
+export const AUTH = {
+  header: "x-splat-key",
+  cookie: "splat-key",
+  fragmentParam: "k",
+} as const;
+
+/** /api/info payload when a passcode is set and the caller has not presented
+ *  it: everything sensitive is withheld. */
+export interface ServerInfoLocked {
+  name: string;
+  version: string;
+  authRequired: true;
+}
+
+/**
+ * Extract the passcode token from a URL fragment such as `#k=abc123`. Lives
+ * here (DOM-free, uses only URLSearchParams) so it is the single source of
+ * truth shared by the browser client and by tests. Returns the trimmed token
+ * or null. Percent-encoding is decoded by URLSearchParams.
+ */
+export function parseTokenFromHash(hash: string): string | null {
+  if (!hash) return null;
+  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (!raw) return null;
+  const token = new URLSearchParams(raw).get(AUTH.fragmentParam);
+  const trimmed = token?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** File extensions the client offers rich preview for (fetched, rendered
+ *  client-side, always through DOMPurify). Images use INLINE_IMAGE_MIMES. */
+export const PREVIEW_MARKDOWN_EXTENSIONS = ["md", "markdown"] as const;
+export const PREVIEW_CODE_EXTENSIONS = [
+  "js", "jsx", "ts", "tsx", "mjs", "cjs",
+  "css", "scss", "less",
+  "html", "xml", "svg",
+  "json", "yml", "yaml", "toml", "ini",
+  "sh", "bash", "zsh",
+  "py", "rb", "go", "rs", "java", "kt", "swift", "c", "h", "cpp", "hpp", "cs",
+  "sql", "graphql", "txt", "log", "csv", "diff", "patch",
+] as const;
+
 export const LIMITS = {
+  /** Max size of a file the client will fetch for text/markdown/code
+   *  preview; bigger files fall back to download-only. */
+  maxPreviewBytes: 512 * 1024,
   /** Max size of a single text broadcast, in bytes of UTF-8. */
   maxTextBytes: 256 * 1024,
   /** Default max size of a single uploaded file. Overridable via --max-file-size. */

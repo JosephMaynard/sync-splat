@@ -14,6 +14,7 @@ import { createRequestHandler } from "./http";
 import { registerSocketHandlers, type SyncSplatIO } from "./socket";
 import { VERSION, getAllowedHostnames, getLanUrls, getMdnsUrl } from "./net";
 import { isAllowedOrigin } from "./util";
+import { checkSocketKey } from "./auth";
 import { printBanner } from "./banner";
 
 export { VERSION };
@@ -35,6 +36,10 @@ export interface SyncSplatOptions {
    *  entirely; undefined (the default) shares process.cwd(), like
    *  `python -m http.server`. Non-null values must be an existing directory. */
   shareDir?: string | null;
+  /** Passcode. When set, every /api/* route (except /api/info) and every
+   *  socket handshake requires a matching key. null/undefined (the default)
+   *  disables the passcode entirely — behaviour is unchanged. */
+  token?: string | null;
 }
 
 export interface SyncSplatServer {
@@ -67,6 +72,7 @@ export async function createSyncSplatServer(
   opts: SyncSplatOptions,
 ): Promise<SyncSplatServer> {
   const host = opts.host ?? "0.0.0.0";
+  const token = opts.token ?? null;
   const maxFileBytes = opts.maxFileBytes ?? LIMITS.maxFileBytes;
   if (!Number.isSafeInteger(maxFileBytes) || maxFileBytes <= 0) {
     // NaN would silently disable the size cap entirely (every comparison
@@ -123,6 +129,19 @@ export async function createSyncSplatServer(
     },
   });
 
+  // Passcode gate for socket handshakes. The origin check lives in allowRequest
+  // (engine.io level, before the handshake auth exists); the key travels in the
+  // socket.io CONNECT packet's `auth.token`, only readable here in middleware.
+  // A rejection surfaces to the client as connect_error, same as an origin
+  // rejection. No-op when no passcode is set.
+  io.use((socket, next) => {
+    if (checkSocketKey(socket.handshake, token)) {
+      next();
+    } else {
+      next(new Error("unauthorized"));
+    }
+  });
+
   let boundPort = opts.port;
   const getUrls = () => getLanUrls(boundPort);
   const mdnsUrl = () => getMdnsUrl(boundPort);
@@ -142,6 +161,7 @@ export async function createSyncSplatServer(
     maxFileBytes,
     onItemCreated: (item: Item) => io.emit("item:new", item),
     shareDir,
+    token,
     getMdnsUrl: mdnsUrl,
     // Only reprint the banner when the server owns the terminal (banner:true).
     onNetworkRefresh: opts.banner
@@ -152,6 +172,7 @@ export async function createSyncSplatServer(
             mdnsUrl: mdnsUrl(),
             hasClient: staticHandler.hasClient,
             shareDir,
+            token,
           })
       : undefined,
   });
@@ -192,6 +213,7 @@ export async function createSyncSplatServer(
       mdnsUrl: mdnsUrl(),
       hasClient: staticHandler.hasClient,
       shareDir,
+      token,
     });
   }
 

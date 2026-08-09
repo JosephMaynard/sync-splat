@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import {
   ClipboardDocumentIcon,
@@ -7,11 +7,17 @@ import {
   TrashIcon,
   ArrowDownTrayIcon,
   DocumentIcon,
-  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import type { Item } from "../shared/types";
 import { INLINE_IMAGE_MIMES } from "../shared/types";
-import { humanSize, middleTruncate, htmlToPlainText } from "./util";
+import {
+  humanSize,
+  middleTruncate,
+  htmlToPlainText,
+  isPreviewable,
+} from "./util";
+import { withKey } from "./auth";
+import PreviewModal, { type PreviewTarget } from "./PreviewModal";
 
 interface Props {
   item: Item;
@@ -53,8 +59,8 @@ async function copyHtml(html: string): Promise<boolean> {
 
   // 3) Legacy hidden-textarea + execCommand — the only path that works over
   //    http:// from many phones (clipboard API needs a secure context).
+  const ta = document.createElement("textarea");
   try {
-    const ta = document.createElement("textarea");
     ta.value = plain;
     ta.setAttribute("readonly", "");
     ta.style.position = "fixed";
@@ -62,11 +68,12 @@ async function copyHtml(html: string): Promise<boolean> {
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
+    return document.execCommand("copy");
   } catch {
     return false;
+  } finally {
+    // Remove in finally so a throwing execCommand can't leak the node.
+    ta.remove();
   }
 }
 
@@ -83,17 +90,9 @@ export default function HistoryItem({ item, onDelete }: Props) {
     return () => clearTimeout(t);
   }, [copied]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
-
-  const cleanHtml =
-    item.kind === "text" ? DOMPurify.sanitize(item.html) : "";
+  const cleanHtml = item.kind === "text" ? DOMPurify.sanitize(item.html) : "";
+  const canPreview =
+    item.kind === "text" || isPreviewable(item.name, item.mime);
 
   const handleCopy = async () => {
     if (item.kind !== "text") return;
@@ -101,6 +100,21 @@ export default function HistoryItem({ item, onDelete }: Props) {
     const ok = await copyHtml(cleanHtml);
     if (ok) setCopied(true);
   };
+
+  // Memoized so a parent re-render doesn't hand PreviewModal a fresh object
+  // and trigger a needless refetch while it's open.
+  const previewTarget = useMemo<PreviewTarget>(
+    () =>
+      item.kind === "text"
+        ? { type: "text", html: cleanHtml, title: "Splat" }
+        : {
+            type: "file",
+            name: item.name,
+            mime: item.mime,
+            url: `/api/file/${item.id}`,
+          },
+    [item, cleanHtml],
+  );
 
   return (
     <>
@@ -114,7 +128,7 @@ export default function HistoryItem({ item, onDelete }: Props) {
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {isInlineImage(item.mime) ? (
               <img
-                src={`/api/file/${item.id}`}
+                src={withKey(`/api/file/${item.id}`)}
                 alt={item.name}
                 loading="lazy"
                 className="max-h-14 w-14 shrink-0 rounded object-cover"
@@ -162,15 +176,28 @@ export default function HistoryItem({ item, onDelete }: Props) {
               </button>
             </>
           ) : (
-            <a
-              href={`/api/file/${item.id}`}
-              download={item.name}
-              className={`${iconButton} rounded-l-md`}
-              title="Download"
-            >
-              <span className="sr-only">Download</span>
-              <ArrowDownTrayIcon className="size-5" aria-hidden="true" />
-            </a>
+            <>
+              {canPreview && (
+                <button
+                  type="button"
+                  className={`${iconButton} rounded-l-md`}
+                  title="Preview"
+                  onClick={() => setOpen(true)}
+                >
+                  <span className="sr-only">Preview</span>
+                  <EyeIcon className="size-5" aria-hidden="true" />
+                </button>
+              )}
+              <a
+                href={withKey(`/api/file/${item.id}`)}
+                download={item.name}
+                className={`${iconButton} ${canPreview ? "-ml-px" : "rounded-l-md"}`}
+                title="Download"
+              >
+                <span className="sr-only">Download</span>
+                <ArrowDownTrayIcon className="size-5" aria-hidden="true" />
+              </a>
+            </>
           )}
           <button
             type="button"
@@ -184,29 +211,8 @@ export default function HistoryItem({ item, onDelete }: Props) {
         </span>
       </div>
 
-      {open && item.kind === "text" && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onClick={() => setOpen(false)}
-        >
-          <div
-            className="relative max-h-[80vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-6 shadow-xl dark:border dark:border-gray-800 dark:bg-gray-900"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              className="absolute right-3 top-3 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
-              onClick={() => setOpen(false)}
-              aria-label="Close"
-            >
-              <XMarkIcon className="size-5" aria-hidden="true" />
-            </button>
-            <div
-              className="text-gray-800 dark:text-gray-200"
-              dangerouslySetInnerHTML={{ __html: cleanHtml }}
-            />
-          </div>
-        </div>
+      {open && (
+        <PreviewModal target={previewTarget} onClose={() => setOpen(false)} />
       )}
     </>
   );
