@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   QrCodeIcon,
-  PaperClipIcon,
   ArrowUpTrayIcon,
   SunIcon,
   MoonIcon,
@@ -440,8 +439,8 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
-      <header className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-gray-800 dark:bg-gray-900">
+    <div className="flex h-dvh flex-col overflow-hidden bg-gray-100 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-gray-800 dark:bg-gray-900">
         <div className="flex items-center gap-2">
           <Logo className="h-8 w-8 text-blue-600 dark:text-blue-500" />
           <h1 className="text-xl font-bold sm:text-2xl">Sync Splat</h1>
@@ -486,48 +485,31 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 p-4 sm:p-6 md:grid-cols-2">
-        {/* compose column */}
-        <section className="flex flex-col">
+      <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-y-auto p-4 sm:p-6 md:min-h-0 md:grid-cols-2 md:overflow-hidden">
+        {/* compose column — editor scrolls, controls pinned in Compose's footer */}
+        <section className="flex min-h-0 flex-col">
           <Compose
             connected={connected}
             sending={sending}
             attachments={attachments}
             uploadProgress={uploadProgress}
             maxTextBytes={maxTextBytes}
+            maxFileBytes={maxFileBytes}
+            uploadError={uploadError}
+            onAttach={() => fileInputRef.current?.click()}
             onBroadcast={broadcast}
             onRemoveAttachment={removeAttachment}
           />
-
-          <div className="mt-4">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-600 hover:border-blue-400 hover:text-blue-600 sm:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-blue-500 dark:hover:text-blue-400"
-            >
-              <PaperClipIcon className="size-5" aria-hidden="true" />
-              Attach a file
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files?.length) addAttachments(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
-              …or drag files onto the page, or paste a screenshot. Attachments
-              send when you broadcast. Max {humanSize(maxFileBytes)}.
-            </p>
-            {uploadError && (
-              <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-                {uploadError}
-              </p>
-            )}
-          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) addAttachments(e.target.files);
+              e.target.value = "";
+            }}
+          />
         </section>
 
         {/* splats / files column */}
@@ -576,6 +558,7 @@ export default function App() {
             </h2>
           )}
 
+          <div className="min-h-0 flex-1 md:overflow-y-auto">
           {(!share || tab === "splats") && (
             <div
               id="panel-splats"
@@ -614,6 +597,7 @@ export default function App() {
               />
             </div>
           )}
+          </div>
         </section>
       </main>
 

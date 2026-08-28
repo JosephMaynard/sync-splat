@@ -21,7 +21,7 @@ Everything lives in memory and disappears when you stop the server. There is no 
 - **Phone-friendly.** A QR code in the terminal opens the app on any device on the network.
 - **Rich text.** Paste formatted text; it is sanitized and broadcast to everyone instantly.
 - **Files.** Drag‑and‑drop, pick, or paste a screenshot — files stage as previews in the compose box and send when you broadcast. Images preview inline; everything else downloads.
-- **Shared folder.** By default the directory you launch from is browsable from any device on the network — download files and upload new ones straight to disk. Point it elsewhere with `--share`, or turn it off with `--no-share`. Dotfiles are never listed or served.
+- **Shared folder (opt-in).** Add `--share` and a **Files** tab lets any device browse, download, and upload straight to disk. Bare `--share` shares the directory you launched from; `--share <path>` shares somewhere else. Off unless you ask for it; dotfiles are never listed or served.
 - **Optional passcode.** Start with `--pin` to require a short passcode on every read and write. It rides along in the QR/URL fragment, so a phone scan still just works, and non‑browser clients pass it with `--key`.
 - **Terminal client.** Talk to a running server without a browser: `sync-splat send`, `history`, and `get` push and pull text and files straight from the shell.
 - **Live sync.** History is shared over WebSockets — new items appear everywhere at once.
@@ -42,15 +42,14 @@ Then open the printed **Local** URL on this machine, or the **Network** URL (or 
 | --- | --- | --- |
 | `-p, --port <n>` | `3011` | Port to listen on. The `PORT` env var is also honoured; the flag wins. |
 | `--max-file-size <MB>` | `20` | Maximum size of a single upload, in megabytes. |
-| `--share <path>` | current dir | Folder to share for browse/upload. Must be an existing directory. |
-| `--no-share` | | Disable folder sharing entirely. |
+| `--share [path]` | off | Enable the folder browser. Bare = current dir; a path shares that dir (must exist). |
 | `--pin [value]` | off | Require a passcode. With no value one is generated; `--pin <value>` sets your own. Embedded in the printed URLs/QR. See [Passcode](#passcode). |
 | `-h, --help` | | Show usage. |
 
 ```bash
 sync-splat --port 8080 --max-file-size 50
-sync-splat --share ~/Downloads
-sync-splat --no-share
+sync-splat --share               # share the current directory
+sync-splat --share ~/Downloads   # share a specific folder
 sync-splat --pin                 # generate a passcode
 sync-splat --pin hunter2         # set your own
 PORT=4000 sync-splat
@@ -66,9 +65,8 @@ The banner also prints a **Stable** URL of the form `http://<hostname>.local:<po
 
 sync-splat serves a folder over the network, a bit like `python -m http.server` — but with uploads too.
 
-- **On by default, rooted at the current directory.** Whatever folder you run `sync-splat` from is browsable from any device on the network. Open the app and switch to the **Files** tab.
-- **`--share <path>`** shares a different folder instead. The path must be an existing directory.
-- **`--no-share`** turns folder sharing off entirely; only the clipboard/history features remain.
+- **Off by default — opt in with `--share`.** Nothing on disk is exposed unless you ask. Bare `--share` shares the directory you launched from; the **Files** tab then appears in the app.
+- **`--share <path>`** shares a specific folder instead. The path must be an existing directory.
 - **Browse and download** any file in the tree. Non‑image files download as attachments; common raster images can preview inline.
 - **Upload** new files into any folder from the app. Uploads **never overwrite**: if a name is taken, sync-splat inserts a space and appends `(1)`, `(2)`, … before the extension.
 - **Dotfiles stay private.** Entries whose name starts with `.` — and any directory named that way — are never listed, downloaded, or written to, so `.env`, `.git`, and friends don't leak. Symlinks that lead outside the shared folder are not followed.
@@ -121,7 +119,7 @@ sync-splat send "no more flags"
 - **Same-origin enforced.** The server serves the client and the socket from one origin and sets no CORS headers. On top of that it validates the `Origin` header on uploads and on every socket handshake against the machine's own addresses (localhost + its interface IPs — not the spoofable `Host` header, so DNS rebinding doesn't bypass it). A hostile web page you happen to visit can't write to your history or read it over a WebSocket. Requests without an `Origin` — curl and other non-browser clients — are allowed. None of this is a substitute for auth.
 - **Text is sanitized.** Shared HTML is sanitized (with DOMPurify) before it is rendered, to prevent stored‑XSS between clients.
 - **Files are download-only.** Uploads are served with `X-Content-Type-Options: nosniff` and, for anything that isn't a common raster image, as `application/octet-stream` with a `Content-Disposition: attachment`. Only the image types in the allow‑list (PNG, JPEG, GIF, WebP, AVIF) are served inline for thumbnails. SVG is deliberately treated as a download because it can contain script.
-- **The shared folder is read/write over the network — by default, the directory you launched from.** Anyone who can reach the port can list and download its files and upload new ones straight to disk. Path traversal is blocked (all three share routes go through one validator that rejects `..`, absolute paths, backslashes, and NUL) and dotfiles/dot‑dirs (`.env`, `.git`, …) are never listed, served, or written, but everything else in that tree is exposed. Uploads never overwrite existing files, and the same `Origin` allow‑list that guards clipboard uploads guards share uploads. Point it somewhere deliberate with `--share`, or disable it with `--no-share`.
+- **The shared folder is read/write over the network — but only when you pass `--share`.** It's off by default. Once enabled, anyone who can reach the port can list and download its files and upload new ones straight to disk. Path traversal is blocked (all three share routes go through one validator that rejects `..`, absolute paths, backslashes, and NUL) and dotfiles/dot‑dirs (`.env`, `.git`, …) are never listed, served, or written, but everything else in that tree is exposed. Uploads never overwrite existing files, and the same `Origin` allow‑list that guards clipboard uploads guards share uploads. Point it somewhere deliberate with `--share <path>`.
 - **Nothing from the clipboard is persisted.** Shared text and staged file blobs live in memory and are gone when the process exits. (Files you upload to the shared folder are, of course, written to disk on purpose.)
 
 **Bottom line: use it on trusted networks only.** Don't expose the port to the internet or to networks with people you don't trust.

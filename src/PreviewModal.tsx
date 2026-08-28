@@ -5,14 +5,21 @@ import { marked } from "marked";
 // fraction of the full package's bundle size; unknown types fall back to
 // highlightAuto over that same set.
 import hljs from "highlight.js/lib/common";
-import { XMarkIcon, ArrowDownTrayIcon } from "@heroicons/react/24/outline";
+import {
+  XMarkIcon,
+  ArrowDownTrayIcon,
+  ClipboardDocumentIcon,
+  CheckIcon,
+} from "@heroicons/react/24/outline";
 import { LIMITS } from "../shared/types";
 import { authHeaders, withKey } from "./auth";
+import { copyRich, copyText } from "./clipboard";
 import { useModalA11y } from "./useModalA11y";
 import {
   classifyPreview,
   fileExtension,
   hljsLanguageForExtension,
+  htmlToPlainText,
   humanSize,
 } from "./util";
 
@@ -28,8 +35,10 @@ interface Props {
 
 type Loaded =
   | { state: "loading" }
-  | { state: "html"; html: string }
-  | { state: "code"; html: string }
+  // `raw` is the original source text (kept so it can be copied verbatim);
+  // absent for text splats, which copy from their own html.
+  | { state: "html"; html: string; raw?: string }
+  | { state: "code"; html: string; raw: string }
   | { state: "fallback"; reason: string };
 
 /**
@@ -117,6 +126,7 @@ export default function PreviewModal({ target, onClose }: Props) {
           setLoaded({
             state: "html",
             html: DOMPurify.sanitize(rendered),
+            raw: text,
           });
         } else {
           const ext = fileExtension(fileName);
@@ -128,6 +138,7 @@ export default function PreviewModal({ target, onClose }: Props) {
           setLoaded({
             state: "code",
             html: DOMPurify.sanitize(highlighted),
+            raw: text,
           });
         }
       } catch (err) {
@@ -154,6 +165,28 @@ export default function PreviewModal({ target, onClose }: Props) {
     target.type === "file" ? target.name : (target.title ?? "Preview");
   const downloadUrl = target.type === "file" ? withKey(target.url) : null;
 
+  // Copy is offered wherever there's text to copy: a text splat (rich), or a
+  // loaded markdown/code source (verbatim). Images and fallbacks have none.
+  const rawSource =
+    (loaded.state === "code" || loaded.state === "html") &&
+    typeof loaded.raw === "string"
+      ? loaded.raw
+      : null;
+  const canCopy = target.type === "text" || rawSource !== null;
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    const ok =
+      target.type === "text"
+        ? await copyRich(target.html, htmlToPlainText(target.html))
+        : rawSource !== null
+          ? await copyText(rawSource)
+          : false;
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
@@ -173,6 +206,26 @@ export default function PreviewModal({ target, onClose }: Props) {
             {title}
           </h2>
           <div className="flex shrink-0 items-center gap-1">
+            {canCopy && (
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                title={copied ? "Copied!" : "Copy"}
+              >
+                <span className="sr-only">
+                  {copied ? "Copied" : "Copy to clipboard"}
+                </span>
+                {copied ? (
+                  <CheckIcon
+                    className="size-5 text-green-600 dark:text-green-500"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ClipboardDocumentIcon className="size-5" aria-hidden="true" />
+                )}
+              </button>
+            )}
             {downloadUrl && (
               <a
                 href={downloadUrl}

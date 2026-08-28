@@ -43,14 +43,13 @@ describe("bin/sync-splat.js", () => {
     });
   });
 
-  it("--help mentions --share and --no-share", async () => {
+  it("--help mentions --share", async () => {
     const { stdout } = await execFileAsync(
       process.execPath,
       [binPath, "--help"],
       { cwd: repoRoot, timeout: 10_000 },
     );
     expect(stdout).toContain("--share");
-    expect(stdout).toContain("--no-share");
   });
 
   it("--share on a missing folder exits 1 with a clear error", async () => {
@@ -66,15 +65,15 @@ describe("bin/sync-splat.js", () => {
     });
   });
 
-  it("--share as the final argument exits 1 instead of silently sharing cwd", async () => {
+  it("--share on a path that is a file (not a dir) exits 1", async () => {
     await expect(
-      execFileAsync(process.execPath, [binPath, "--share"], {
+      execFileAsync(process.execPath, [binPath, "--share", binPath], {
         cwd: repoRoot,
         timeout: 10_000,
       }),
     ).rejects.toMatchObject({
       code: 1,
-      stderr: expect.stringContaining("requires a folder path"),
+      stderr: expect.stringContaining("not a directory"),
     });
   });
 });

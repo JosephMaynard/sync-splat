@@ -12,9 +12,9 @@ SERVER (default) — run a server others connect to:
 Options:
   -p, --port <n>            Port to listen on (default 3011, or $PORT)
       --max-file-size <MB>  Max single upload size in megabytes (default 20)
-      --share <path>        Folder to share for browse/upload (default: current
-                            directory). Dotfiles are never listed or served.
-      --no-share            Disable folder sharing entirely
+      --share [path]        Enable the folder browser (off by default). With no
+                            value it shares the current directory; pass a path to
+                            share that instead. Dotfiles are never listed/served.
       --pin [value]         Require a passcode. With no value one is generated;
                             it is embedded in the printed URLs/QR so a scan just
                             works. Gates reads and writes (not the static shell).
@@ -81,14 +81,16 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--max-file-size=")) {
       opts.maxFileMb = Number(arg.slice("--max-file-size=".length));
     } else if (arg === "--no-share") {
-      opts.share = null;
+      // Sharing is off by default now; accept for back-compat, but it's a no-op.
+      opts.share = false;
     } else if (arg === "--share") {
-      if (i + 1 >= argv.length) {
-        console.error("sync-splat: --share requires a folder path");
-        console.error("Run `sync-splat --help` for usage.");
-        process.exit(1);
+      // Optional value: bare --share shares cwd; a following non-flag is a path.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        opts.share = argv[++i];
+      } else {
+        opts.share = true; // share the current directory
       }
-      opts.share = argv[++i];
     } else if (arg.startsWith("--share=")) {
       opts.share = arg.slice("--share=".length);
     } else if (arg === "--pin") {
@@ -154,15 +156,12 @@ async function runServer(argv) {
     maxFileBytes = Math.floor(args.maxFileMb * 1024 * 1024);
   }
 
-  // undefined → share cwd (factory default); null → --no-share; string → --share.
+  // Sharing is off by default. undefined / false (--no-share) → off; true
+  // (bare --share) → cwd; a string → that directory.
   let shareDir;
-  if (args.share === null) {
-    shareDir = null;
-  } else if (args.share !== undefined) {
-    if (typeof args.share !== "string" || args.share === "") {
-      console.error("sync-splat: --share requires a folder path");
-      process.exit(1);
-    }
+  if (args.share === true) {
+    shareDir = process.cwd();
+  } else if (typeof args.share === "string" && args.share !== "") {
     shareDir = path.resolve(args.share);
     let stat;
     try {

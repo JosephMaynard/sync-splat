@@ -17,6 +17,7 @@ import {
   isPreviewable,
 } from "./util";
 import { withKey } from "./auth";
+import { copyRich } from "./clipboard";
 import PreviewModal, { type PreviewTarget } from "./PreviewModal";
 
 interface Props {
@@ -28,53 +29,9 @@ function isInlineImage(mime: string): boolean {
   return (INLINE_IMAGE_MIMES as readonly string[]).includes(mime);
 }
 
-/** Copy rich text with a robust fallback chain that works on http:// phones. */
-async function copyHtml(html: string): Promise<boolean> {
-  const plain = htmlToPlainText(html);
-
-  // 1) Rich clipboard (html + plain).
-  try {
-    if (navigator.clipboard && "write" in navigator.clipboard) {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([plain], { type: "text/plain" }),
-        }),
-      ]);
-      return true;
-    }
-  } catch {
-    /* fall through */
-  }
-
-  // 2) Plain-text clipboard.
-  try {
-    if (navigator.clipboard && "writeText" in navigator.clipboard) {
-      await navigator.clipboard.writeText(plain);
-      return true;
-    }
-  } catch {
-    /* fall through */
-  }
-
-  // 3) Legacy hidden-textarea + execCommand — the only path that works over
-  //    http:// from many phones (clipboard API needs a secure context).
-  const ta = document.createElement("textarea");
-  try {
-    ta.value = plain;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.top = "-1000px";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    return document.execCommand("copy");
-  } catch {
-    return false;
-  } finally {
-    // Remove in finally so a throwing execCommand can't leak the node.
-    ta.remove();
-  }
+/** Copy rich text (html + plain), via the shared clipboard fallback chain. */
+function copyHtml(html: string): Promise<boolean> {
+  return copyRich(html, htmlToPlainText(html));
 }
 
 const iconButton =
