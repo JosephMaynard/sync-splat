@@ -76,4 +76,52 @@ describe("bin/sync-splat.js", () => {
       stderr: expect.stringContaining("not a directory"),
     });
   });
+
+  it('--port "" exits 1 instead of silently binding a random port', async () => {
+    await expect(
+      execFileAsync(process.execPath, [binPath, "--port", ""], {
+        cwd: repoRoot,
+        timeout: 10_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("--port requires a value"),
+    });
+  });
+
+  it("--port= exits 1", async () => {
+    await expect(
+      execFileAsync(process.execPath, [binPath, "--port="], {
+        cwd: repoRoot,
+        timeout: 10_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("--port requires a value"),
+    });
+  });
+
+  it("--share= exits 1 instead of silently disabling sharing", async () => {
+    await expect(
+      execFileAsync(process.execPath, [binPath, "--share="], {
+        cwd: repoRoot,
+        timeout: 10_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("--share value cannot be empty"),
+    });
+  });
+
+  it('--share "" exits 1', async () => {
+    await expect(
+      execFileAsync(process.execPath, [binPath, "--share", ""], {
+        cwd: repoRoot,
+        timeout: 10_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("--share value cannot be empty"),
+    });
+  });
 });

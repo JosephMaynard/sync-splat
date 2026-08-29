@@ -177,16 +177,24 @@ export default function App() {
     if (authState !== "ok") return;
 
     const onHistory = (items: Item[]) => setHistory(items);
-    const onNew = (item: Item) => setHistory((prev) => [item, ...prev]);
+    // Dedupe by id: a reconnect/ordering hiccup can deliver an item that the
+    // history snapshot already contained, which would duplicate React keys.
+    const onNew = (item: Item) =>
+      setHistory((prev) =>
+        prev.some((i) => i.id === item.id) ? prev : [item, ...prev],
+      );
     const onDeleted = (id: string) =>
       setHistory((prev) => prev.filter((it) => it.id !== id));
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
     const onConnectError = (err: Error) => {
       // The server's socket middleware rejects a bad key with
-      // Error("unauthorized"); only that (with a passcode in play) should
-      // surface the prompt. Transport/network blips socket.io retries itself.
-      if (authRequiredRef.current && err.message === "unauthorized") {
+      // Error("unauthorized"); that alone proves a passcode is in play, even
+      // when the boot /api/info fetch failed and authRequiredRef stayed false
+      // (otherwise the rejected socket would retry forever with no prompt).
+      // Transport/network blips socket.io retries itself.
+      if (err.message === "unauthorized") {
+        authRequiredRef.current = true;
         setAuthState("locked");
       }
     };
@@ -330,11 +338,11 @@ export default function App() {
 
   const removeAttachment = useCallback(
     (localId: string) => {
-      setAttachments((prev) => {
-        const target = prev.find((a) => a.localId === localId);
-        if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
-        return prev.filter((a) => a.localId !== localId);
-      });
+      // Look up + revoke outside the setState updater — updaters must be pure
+      // (StrictMode double-invokes them, which would double-revoke).
+      const target = attachmentsRef.current.find((a) => a.localId === localId);
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      setAttachments((prev) => prev.filter((a) => a.localId !== localId));
       clearProgress(localId);
     },
     [clearProgress],
@@ -372,8 +380,11 @@ export default function App() {
     [attachments, sendText, uploadFile, clearProgress],
   );
 
-  /* drag-and-drop onto the whole page */
+  /* drag-and-drop onto the whole page — only once the app has booted, so the
+   * passcode/checking screens can't silently stage files (and leak object
+   * URLs) with no visible feedback */
   useEffect(() => {
+    if (authState !== "ok") return;
     const hasFiles = (e: DragEvent) =>
       Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
@@ -412,10 +423,12 @@ export default function App() {
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [addAttachments]);
+  }, [addAttachments, authState]);
 
-  /* paste files (e.g. screenshots) anywhere on the page — stage, don't send */
+  /* paste files (e.g. screenshots) anywhere on the page — stage, don't send.
+   * Gated on the auth gate like drag-and-drop above. */
   useEffect(() => {
+    if (authState !== "ok") return;
     const onPaste = (e: ClipboardEvent) => {
       const files = e.clipboardData?.files;
       if (files && files.length > 0) {
@@ -426,7 +439,7 @@ export default function App() {
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [addAttachments]);
+  }, [addAttachments, authState]);
 
   // Hold rendering until the auth gate resolves, then either prompt or boot.
   if (authState === "checking") {
@@ -466,9 +479,16 @@ export default function App() {
                 }}
                 onClick={() => setTab(t)}
                 onKeyDown={(e) => {
-                  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                  let next: "splats" | "files" | null = null;
+                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                    next = t === "splats" ? "files" : "splats";
+                  } else if (e.key === "Home") {
+                    next = "splats";
+                  } else if (e.key === "End") {
+                    next = "files";
+                  }
+                  if (!next) return;
                   e.preventDefault();
-                  const next = t === "splats" ? "files" : "splats";
                   setTab(next);
                   tabRefs.current[next]?.focus();
                 }}
@@ -525,7 +545,7 @@ export default function App() {
 
       <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-y-auto p-4 sm:p-6 md:min-h-0 md:grid-cols-2 md:overflow-hidden">
         {/* compose column — editor scrolls, controls pinned in Compose's footer */}
-        <section className="flex min-h-0 flex-col">
+        <section aria-label="Compose" className="flex min-h-0 flex-col">
           <Compose
             connected={connected}
             sending={sending}
@@ -550,40 +570,47 @@ export default function App() {
           />
         </section>
 
-        {/* splats / files column */}
-        <section className="flex min-h-0 flex-col">
+        {/* splats / files column — both panels stay mounted (the inactive one
+            is `hidden`) so aria-controls IDREFs always resolve and ShareBrowser
+            keeps its folder path and in-flight uploads across tab switches */}
+        <section
+          aria-label={share && tab === "files" ? "Files" : "Splats"}
+          className="flex min-h-0 flex-col"
+        >
           <div className="min-h-0 flex-1 md:overflow-y-auto">
-          {(!share || tab === "splats") && (
-            <div
-              id="panel-splats"
-              role={share ? "tabpanel" : undefined}
-              aria-labelledby={share ? "tab-splats" : undefined}
-            >
-              {history.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-500">
-                  Nothing splatted yet. Broadcast some text or share a file to
-                  get started.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {history.map((item) => (
-                    <HistoryItem
-                      key={item.id}
-                      item={item}
-                      onDelete={deleteItem}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <div
+            id="panel-splats"
+            role={share ? "tabpanel" : undefined}
+            aria-labelledby={share ? "tab-splats" : undefined}
+            hidden={Boolean(share) && tab !== "splats"}
+          >
+            {history.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-500">
+                Nothing splatted yet. Broadcast some text or share a file to
+                get started.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {history.map((item) => (
+                  <HistoryItem
+                    key={item.id}
+                    item={item}
+                    onDelete={deleteItem}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
 
-          {share && tab === "files" && (
+          {share && (
             <div
               id="panel-files"
               role="tabpanel"
               aria-labelledby="tab-files"
-              className="flex min-h-0 flex-col"
+              // No display class while hidden: an author `display:flex` would
+              // override the `hidden` attribute's UA display:none.
+              className={tab === "files" ? "flex min-h-0 flex-col" : undefined}
+              hidden={tab !== "files"}
             >
               <ShareBrowser
                 shareName={share.name}

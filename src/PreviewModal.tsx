@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import DOMPurify from "dompurify";
 import { marked } from "marked";
 // The "common" subset (~40 languages) covers our preview extensions at a
 // fraction of the full package's bundle size; unknown types fall back to
@@ -14,6 +13,7 @@ import {
 import { LIMITS } from "../shared/types";
 import { authHeaders, withKey } from "./auth";
 import { copyRich, copyText } from "./clipboard";
+import { sanitizeHtml } from "./sanitize";
 import { useModalA11y } from "./useModalA11y";
 import {
   classifyPreview,
@@ -46,8 +46,11 @@ type Loaded =
  * Streams the body and aborts as soon as the cap is exceeded, so a server that
  * sends no Content-Length (or a wrong one) can't make us buffer a huge file.
  */
-async function fetchCappedText(url: string): Promise<string> {
-  const res = await fetch(url, { headers: authHeaders() });
+async function fetchCappedText(
+  url: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await fetch(url, { headers: authHeaders(), signal });
   if (!res.ok) throw new Error(`fetch ${res.status}`);
   const declared = Number(res.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > LIMITS.maxPreviewBytes) {
@@ -93,7 +96,7 @@ export default function PreviewModal({ target, onClose }: Props) {
 
   const [loaded, setLoaded] = useState<Loaded>(() =>
     target.type === "text"
-      ? { state: "html", html: target.html }
+      ? { state: "html", html: sanitizeHtml(target.html) }
       : { state: "loading" },
   );
 
@@ -115,17 +118,18 @@ export default function PreviewModal({ target, onClose }: Props) {
     // `loaded` already initializes to "loading" for file targets, and this
     // modal is mounted fresh per open, so no synchronous reset is needed here.
     let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       try {
         // fetchCappedText sends the X-Splat-Key header, so no ?k= needed here;
         // withKey stays for <img>/<a> URLs that can't set headers.
-        const text = await fetchCappedText(fileUrl);
+        const text = await fetchCappedText(fileUrl, controller.signal);
         if (cancelled) return;
         if (kind === "markdown") {
           const rendered = marked.parse(text, { async: false }) as string;
           setLoaded({
             state: "html",
-            html: DOMPurify.sanitize(rendered),
+            html: sanitizeHtml(rendered),
             raw: text,
           });
         } else {
@@ -137,7 +141,7 @@ export default function PreviewModal({ target, onClose }: Props) {
               : hljs.highlightAuto(text).value;
           setLoaded({
             state: "code",
-            html: DOMPurify.sanitize(highlighted),
+            html: sanitizeHtml(highlighted),
             raw: text,
           });
         }
@@ -152,6 +156,9 @@ export default function PreviewModal({ target, onClose }: Props) {
     })();
     return () => {
       cancelled = true;
+      // Abort the in-flight fetch so closing the modal frees the connection
+      // instead of letting a large download run to completion in the void.
+      controller.abort();
     };
     // Stable primitives, not the target object identity, so a parent re-render
     // that passes a fresh object doesn't refetch.
@@ -174,6 +181,13 @@ export default function PreviewModal({ target, onClose }: Props) {
       : null;
   const canCopy = target.type === "text" || rawSource !== null;
   const [copied, setCopied] = useState(false);
+  // Reset "Copied!" after a beat; the cleanup clears the timer on unmount
+  // (mirrors HistoryItem's copied-timer pattern).
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
   const handleCopy = async () => {
     const ok =
       target.type === "text"
@@ -181,10 +195,7 @@ export default function PreviewModal({ target, onClose }: Props) {
         : rawSource !== null
           ? await copyText(rawSource)
           : false;
-    if (ok) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
+    if (ok) setCopied(true);
   };
 
   return (

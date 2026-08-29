@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-import DOMPurify from "dompurify";
+import { memo, useEffect, useMemo, useState } from "react";
 import {
   ClipboardDocumentIcon,
   CheckIcon,
@@ -17,6 +16,7 @@ import {
   isPreviewable,
 } from "./util";
 import { withKey } from "./auth";
+import { sanitizeHtml } from "./sanitize";
 import { copyRich } from "./clipboard";
 import PreviewModal, { type PreviewTarget } from "./PreviewModal";
 
@@ -37,7 +37,7 @@ function copyHtml(html: string): Promise<boolean> {
 const iconButton =
   "relative inline-flex items-center bg-white px-2.5 py-2 text-gray-500 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-10 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-gray-700";
 
-export default function HistoryItem({ item, onDelete }: Props) {
+function HistoryItem({ item, onDelete }: Props) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -47,7 +47,12 @@ export default function HistoryItem({ item, onDelete }: Props) {
     return () => clearTimeout(t);
   }, [copied]);
 
-  const cleanHtml = item.kind === "text" ? DOMPurify.sanitize(item.html) : "";
+  // Memoized: sanitizing is not free, and App re-renders this list on every
+  // upload-progress tick. Items are immutable, so keying on the item is safe.
+  const cleanHtml = useMemo(
+    () => (item.kind === "text" ? sanitizeHtml(item.html) : ""),
+    [item],
+  );
   const canPreview =
     item.kind === "text" || isPreviewable(item.name, item.mime);
 
@@ -174,3 +179,7 @@ export default function HistoryItem({ item, onDelete }: Props) {
     </>
   );
 }
+
+// Memoized so App's frequent re-renders (upload progress ticks) don't re-render
+// every history row; `item` is immutable and `onDelete` is a stable callback.
+export default memo(HistoryItem);

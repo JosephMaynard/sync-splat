@@ -1,5 +1,4 @@
 import { useRef, useState } from "react";
-import DOMPurify from "dompurify";
 import {
   PaperAirplaneIcon,
   PaperClipIcon,
@@ -7,6 +6,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import type { BroadcastResult, PendingAttachment } from "./App";
+import { sanitizeToFragment } from "./sanitize";
 import { humanSize, middleTruncate } from "./util";
 
 interface Props {
@@ -107,17 +107,27 @@ export default function Compose({
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
     const range = selection.getRangeAt(0);
-    range.deleteContents();
-    const fragment: Node = html
-      ? DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true })
-      : document.createTextNode(text);
-    const last = fragment.lastChild ?? fragment;
-    if (last === fragment && fragment.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
-      // Sanitizer stripped everything — nothing to insert.
-      syncEmpty();
-      return;
+    // Build the node to insert BEFORE touching the selection, so a paste whose
+    // HTML flavor sanitizes to nothing can't delete the user's selection. When
+    // the sanitized fragment is empty, fall back to the text/plain flavor.
+    let node: Node | null = null;
+    if (html) {
+      const fragment = sanitizeToFragment(html);
+      if (fragment.hasChildNodes()) {
+        node = fragment;
+      } else if (text) {
+        node = document.createTextNode(text);
+      }
+    } else if (text) {
+      node = document.createTextNode(text);
     }
-    range.insertNode(fragment);
+    if (!node) return; // nothing usable to paste — leave the selection alone
+    const last =
+      node.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+        ? node.lastChild!
+        : node;
+    range.deleteContents();
+    range.insertNode(node);
     // Move the caret after the inserted content.
     range.setStartAfter(last);
     range.collapse(true);

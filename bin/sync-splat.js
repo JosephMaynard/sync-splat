@@ -73,9 +73,9 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") {
       opts.help = true;
     } else if (arg === "--port" || arg === "-p") {
-      opts.port = Number(argv[++i]);
+      opts.port = parsePortValue(argv[++i]);
     } else if (arg.startsWith("--port=")) {
-      opts.port = Number(arg.slice("--port=".length));
+      opts.port = parsePortValue(arg.slice("--port=".length));
     } else if (arg === "--max-file-size") {
       opts.maxFileMb = Number(argv[++i]);
     } else if (arg.startsWith("--max-file-size=")) {
@@ -110,6 +110,16 @@ function parseArgs(argv) {
     }
   }
   return opts;
+}
+
+// Number("") and Number("   ") are 0, which passes the port range check and
+// silently binds a random port — reject empty values before converting.
+function parsePortValue(raw) {
+  if (raw === undefined || String(raw).trim() === "") {
+    console.error("sync-splat: --port requires a value");
+    process.exit(1);
+  }
+  return Number(raw);
 }
 
 // URL-safe alphabet without visually ambiguous characters (o/0/l/1/i) so a
@@ -161,7 +171,16 @@ async function runServer(argv) {
   let shareDir;
   if (args.share === true) {
     shareDir = process.cwd();
-  } else if (typeof args.share === "string" && args.share !== "") {
+  } else if (typeof args.share === "string") {
+    // An empty value would silently disable sharing — mirror the --pin
+    // empty-value error instead.
+    if (args.share === "") {
+      console.error(
+        "sync-splat: --share value cannot be empty " +
+          "(use bare --share to share the current directory)",
+      );
+      process.exit(1);
+    }
     shareDir = path.resolve(args.share);
     let stat;
     try {
