@@ -128,9 +128,6 @@ export default function Compose({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <label className="mb-2 shrink-0 text-sm font-medium text-gray-600 dark:text-gray-400">
-        Compose
-      </label>
       <div
         ref={ref}
         contentEditable

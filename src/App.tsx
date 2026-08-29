@@ -445,6 +445,44 @@ export default function App() {
           <Logo className="h-8 w-8 text-blue-600 dark:text-blue-500" />
           <h1 className="text-xl font-bold sm:text-2xl">Sync Splat</h1>
         </div>
+        {share && (
+          <div
+            role="tablist"
+            aria-label="Splats and files"
+            className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-0.5 dark:border-gray-800 dark:bg-gray-800/50"
+          >
+            {(["splats", "files"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                id={`tab-${t}`}
+                aria-selected={tab === t}
+                aria-controls={`panel-${t}`}
+                // Roving tabindex + arrow keys (WAI-ARIA tabs pattern).
+                tabIndex={tab === t ? 0 : -1}
+                ref={(el) => {
+                  tabRefs.current[t] = el;
+                }}
+                onClick={() => setTab(t)}
+                onKeyDown={(e) => {
+                  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                  e.preventDefault();
+                  const next = t === "splats" ? "files" : "splats";
+                  setTab(next);
+                  tabRefs.current[next]?.focus();
+                }}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
+                  tab === t
+                    ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-3">
           <span
             className="flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400"
@@ -514,50 +552,6 @@ export default function App() {
 
         {/* splats / files column */}
         <section className="flex min-h-0 flex-col">
-          {share ? (
-            <div
-              role="tablist"
-              aria-label="Splats and files"
-              className="mb-3 inline-flex self-start rounded-lg border border-gray-200 bg-gray-100 p-0.5 dark:border-gray-800 dark:bg-gray-800/50"
-            >
-              {(["splats", "files"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  role="tab"
-                  id={`tab-${t}`}
-                  aria-selected={tab === t}
-                  aria-controls={`panel-${t}`}
-                  // Roving tabindex: Tab lands on the active tab; arrows move
-                  // selection AND focus between tabs (WAI-ARIA tabs pattern).
-                  tabIndex={tab === t ? 0 : -1}
-                  ref={(el) => {
-                    tabRefs.current[t] = el;
-                  }}
-                  onClick={() => setTab(t)}
-                  onKeyDown={(e) => {
-                    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-                    e.preventDefault();
-                    const next = t === "splats" ? "files" : "splats";
-                    setTab(next);
-                    tabRefs.current[next]?.focus();
-                  }}
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
-                    tab === t
-                      ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100"
-                      : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <h2 className="mb-3 text-sm font-medium text-gray-600 dark:text-gray-400">
-              Splats
-            </h2>
-          )}
-
           <div className="min-h-0 flex-1 md:overflow-y-auto">
           {(!share || tab === "splats") && (
             <div
