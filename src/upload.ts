@@ -29,6 +29,10 @@ export function uploadWithProgress(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
+    // Bound the whole request so a stalled server can't leave the caller
+    // pending (and the UI stuck on "Sending…") forever: 60s base plus 1s per
+    // 100 KiB, so big files on a slow LAN still have time to finish.
+    xhr.timeout = 60_000 + Math.ceil(file.size / (100 * 1024)) * 1000;
     xhr.setRequestHeader(
       "Content-Type",
       file.type || "application/octet-stream",
@@ -49,6 +53,7 @@ export function uploadWithProgress(
     };
     xhr.onerror = () => reject(new Error("network error"));
     xhr.onabort = () => reject(new Error("aborted"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
     xhr.send(file);
   });
 }

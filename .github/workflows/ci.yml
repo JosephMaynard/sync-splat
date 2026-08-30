@@ -46,3 +46,31 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # test:e2e builds the client + server, then drives the real app in a
+      # browser — the only CI check that exercises the built client at runtime.
+      - name: End-to-end smoke
+        run: pnpm test:e2e

@@ -30,10 +30,22 @@ export function createStaticHandler(clientDir: string | undefined): StaticHandle
   ): Promise<void> {
     try {
       const data = await fsp.readFile(absPath);
+      const mime = mimeForPath(absPath);
       const headers: Record<string, string | number> = {
-        "Content-Type": mimeForPath(absPath),
+        "Content-Type": mime,
         "Content-Length": data.length,
       };
+      if (mime.startsWith("text/html")) {
+        // Defense-in-depth for the app document: block a hostile splat from
+        // loading external subresources (tracking/LAN-probe beacons) or
+        // submitting a phishing form, and block framing (clickjacking).
+        // Deliberately omits script-src/style-src so the inline no-flash theme
+        // script and inline styles keep working.
+        headers["Content-Security-Policy"] =
+          "img-src 'self' data: blob:; media-src 'self' blob:; " +
+          "object-src 'none'; base-uri 'none'; form-action 'none'; " +
+          "frame-ancestors 'none'";
+      }
       if (cacheControl) headers["Cache-Control"] = cacheControl;
       res.writeHead(200, headers);
       res.end(data);

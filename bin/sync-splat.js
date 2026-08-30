@@ -12,9 +12,9 @@ SERVER (default) — run a server others connect to:
 Options:
   -p, --port <n>            Port to listen on (default 3011, or $PORT)
       --max-file-size <MB>  Max single upload size in megabytes (default 20)
-      --share <path>        Folder to share for browse/upload (default: current
-                            directory). Dotfiles are never listed or served.
-      --no-share            Disable folder sharing entirely
+      --share [path]        Enable the folder browser (off by default). With no
+                            value it shares the current directory; pass a path to
+                            share that instead. Dotfiles are never listed/served.
       --pin [value]         Require a passcode. With no value one is generated;
                             it is embedded in the printed URLs/QR so a scan just
                             works. Gates reads and writes (not the static shell).
@@ -73,22 +73,24 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") {
       opts.help = true;
     } else if (arg === "--port" || arg === "-p") {
-      opts.port = Number(argv[++i]);
+      opts.port = parsePortValue(argv[++i]);
     } else if (arg.startsWith("--port=")) {
-      opts.port = Number(arg.slice("--port=".length));
+      opts.port = parsePortValue(arg.slice("--port=".length));
     } else if (arg === "--max-file-size") {
       opts.maxFileMb = Number(argv[++i]);
     } else if (arg.startsWith("--max-file-size=")) {
       opts.maxFileMb = Number(arg.slice("--max-file-size=".length));
     } else if (arg === "--no-share") {
-      opts.share = null;
+      // Sharing is off by default now; accept for back-compat, but it's a no-op.
+      opts.share = false;
     } else if (arg === "--share") {
-      if (i + 1 >= argv.length) {
-        console.error("sync-splat: --share requires a folder path");
-        console.error("Run `sync-splat --help` for usage.");
-        process.exit(1);
+      // Optional value: bare --share shares cwd; a following non-flag is a path.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        opts.share = argv[++i];
+      } else {
+        opts.share = true; // share the current directory
       }
-      opts.share = argv[++i];
     } else if (arg.startsWith("--share=")) {
       opts.share = arg.slice("--share=".length);
     } else if (arg === "--pin") {
@@ -108,6 +110,16 @@ function parseArgs(argv) {
     }
   }
   return opts;
+}
+
+// Number("") and Number("   ") are 0, which passes the port range check and
+// silently binds a random port — reject empty values before converting.
+function parsePortValue(raw) {
+  if (raw === undefined || String(raw).trim() === "") {
+    console.error("sync-splat: --port requires a value");
+    process.exit(1);
+  }
+  return Number(raw);
 }
 
 // URL-safe alphabet without visually ambiguous characters (o/0/l/1/i) so a
@@ -132,13 +144,12 @@ async function runServer(argv) {
     process.exit(0);
   }
 
-  // Flag wins over PORT env, which wins over the default.
+  // Flag wins over PORT env, which wins over the default. Trim the env value
+  // so a whitespace-only PORT (Number("  ")===0) defaults to 3011 rather than
+  // silently binding a random port.
+  const envPort = process.env.PORT?.trim();
   const port =
-    args.port !== undefined
-      ? args.port
-      : process.env.PORT
-        ? Number(process.env.PORT)
-        : 3011;
+    args.port !== undefined ? args.port : envPort ? Number(envPort) : 3011;
 
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     console.error(`sync-splat: invalid port "${port}"`);
@@ -154,13 +165,19 @@ async function runServer(argv) {
     maxFileBytes = Math.floor(args.maxFileMb * 1024 * 1024);
   }
 
-  // undefined → share cwd (factory default); null → --no-share; string → --share.
+  // Sharing is off by default. undefined / false (--no-share) → off; true
+  // (bare --share) → cwd; a string → that directory.
   let shareDir;
-  if (args.share === null) {
-    shareDir = null;
-  } else if (args.share !== undefined) {
-    if (typeof args.share !== "string" || args.share === "") {
-      console.error("sync-splat: --share requires a folder path");
+  if (args.share === true) {
+    shareDir = process.cwd();
+  } else if (typeof args.share === "string") {
+    // An empty value would silently disable sharing — mirror the --pin
+    // empty-value error instead.
+    if (args.share === "") {
+      console.error(
+        "sync-splat: --share value cannot be empty " +
+          "(use bare --share to share the current directory)",
+      );
       process.exit(1);
     }
     shareDir = path.resolve(args.share);

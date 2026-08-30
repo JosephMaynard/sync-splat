@@ -350,6 +350,14 @@ describe("sharing disabled (shareDir: null)", () => {
     const info = (await (await fetch(`${baseUrl}/api/info`)).json()) as ServerInfo;
     expect(info.share).toBeNull();
   });
+
+  it("is off by default (no shareDir given)", async () => {
+    await start();
+    const info = (await (await fetch(`${baseUrl}/api/info`)).json()) as ServerInfo;
+    expect(info.share).toBeNull();
+    // …and the share routes 404 just like the explicitly-disabled case.
+    expect((await fetch(`${baseUrl}/api/share/ls`)).status).toBe(404);
+  });
 });
 
 describe("factory validation of shareDir", () => {

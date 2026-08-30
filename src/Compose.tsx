@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import DOMPurify from "dompurify";
 import {
   PaperAirplaneIcon,
+  PaperClipIcon,
   DocumentIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import type { BroadcastResult, PendingAttachment } from "./App";
+import { sanitizeToFragment } from "./sanitize";
 import { humanSize, middleTruncate } from "./util";
 
 interface Props {
@@ -16,6 +17,12 @@ interface Props {
   uploadProgress: Record<string, number>;
   /** Server's max text broadcast size in UTF-8 bytes (from /api/info). */
   maxTextBytes: number;
+  /** Server's max single-file size in bytes (from /api/info), for the hint. */
+  maxFileBytes: number;
+  /** Attachment upload error to surface in the footer, or null. */
+  uploadError: string | null;
+  /** Open the file picker (the hidden input lives in App). */
+  onAttach: () => void;
   /** Send text (null when empty), then upload staged attachments; the result
    *  reports whether the text send was accepted so we know whether to clear. */
   onBroadcast: (html: string | null) => Promise<BroadcastResult>;
@@ -28,6 +35,9 @@ export default function Compose({
   attachments,
   uploadProgress,
   maxTextBytes,
+  maxFileBytes,
+  uploadError,
+  onAttach,
   onBroadcast,
   onRemoveAttachment,
 }: Props) {
@@ -97,17 +107,27 @@ export default function Compose({
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
     const range = selection.getRangeAt(0);
-    range.deleteContents();
-    const fragment: Node = html
-      ? DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true })
-      : document.createTextNode(text);
-    const last = fragment.lastChild ?? fragment;
-    if (last === fragment && fragment.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
-      // Sanitizer stripped everything — nothing to insert.
-      syncEmpty();
-      return;
+    // Build the node to insert BEFORE touching the selection, so a paste whose
+    // HTML flavor sanitizes to nothing can't delete the user's selection. When
+    // the sanitized fragment is empty, fall back to the text/plain flavor.
+    let node: Node | null = null;
+    if (html) {
+      const fragment = sanitizeToFragment(html);
+      if (fragment.hasChildNodes()) {
+        node = fragment;
+      } else if (text) {
+        node = document.createTextNode(text);
+      }
+    } else if (text) {
+      node = document.createTextNode(text);
     }
-    range.insertNode(fragment);
+    if (!node) return; // nothing usable to paste — leave the selection alone
+    const last =
+      node.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+        ? node.lastChild!
+        : node;
+    range.deleteContents();
+    range.insertNode(node);
     // Move the caret after the inserted content.
     range.setStartAfter(last);
     range.collapse(true);
@@ -117,10 +137,7 @@ export default function Compose({
   };
 
   return (
-    <div className="flex flex-1 flex-col">
-      <label className="mb-2 text-sm font-medium text-gray-600 dark:text-gray-400">
-        Compose
-      </label>
+    <div className="flex h-full min-h-0 flex-col">
       <div
         ref={ref}
         contentEditable
@@ -134,17 +151,20 @@ export default function Compose({
         className="min-h-40 flex-1 overflow-auto rounded-lg border border-gray-300 bg-white p-4 text-gray-900 outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-200 empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-500/30 dark:empty:before:text-gray-500"
       />
 
+      {/* Pinned footer: send controls, attachments, and file staging stay in
+          view while the editor above scrolls. */}
+      <div className="mt-3 shrink-0 space-y-3 border-t border-gray-200 pt-3 dark:border-gray-800">
       {sendError && (
         <p
           role="alert"
-          className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
+          className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
         >
           {sendError}
         </p>
       )}
 
       {hasAttachments && (
-        <ul className="mt-3 flex flex-wrap gap-2">
+        <ul className="flex max-h-32 flex-wrap gap-2 overflow-y-auto">
           {attachments.map((att) => {
             const pct = uploadProgress[att.localId];
             return (
@@ -203,7 +223,7 @@ export default function Compose({
         </ul>
       )}
 
-      <div className="mt-3 flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-gray-400 dark:text-gray-500">
           Press{" "}
           <kbd className="rounded border border-gray-300 bg-gray-50 px-1 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
@@ -224,6 +244,27 @@ export default function Compose({
           <PaperAirplaneIcon className="size-4" aria-hidden="true" />
           {sending ? "Sending…" : "Broadcast"}
         </button>
+      </div>
+
+      <div>
+        <button
+          type="button"
+          onClick={onAttach}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-600 hover:border-blue-400 hover:text-blue-600 sm:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-blue-500 dark:hover:text-blue-400"
+        >
+          <PaperClipIcon className="size-5" aria-hidden="true" />
+          Attach a file
+        </button>
+        <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+          …or drag files onto the page, or paste a screenshot. Attachments send
+          when you broadcast. Max {humanSize(maxFileBytes)}.
+        </p>
+        {uploadError && (
+          <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+            {uploadError}
+          </p>
+        )}
+      </div>
       </div>
     </div>
   );

@@ -21,7 +21,7 @@ export default defineConfig({
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
   ],
   webServer: {
-    command: `node bin/sync-splat.js --port ${PORT} --no-share`,
+    command: `node bin/sync-splat.js --port ${PORT}`,
     url: `http://127.0.0.1:${PORT}/api/info`,
     reuseExistingServer: false,
     timeout: 30_000,
