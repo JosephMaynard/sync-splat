@@ -144,13 +144,12 @@ async function runServer(argv) {
     process.exit(0);
   }
 
-  // Flag wins over PORT env, which wins over the default.
+  // Flag wins over PORT env, which wins over the default. Trim the env value
+  // so a whitespace-only PORT (Number("  ")===0) defaults to 3011 rather than
+  // silently binding a random port.
+  const envPort = process.env.PORT?.trim();
   const port =
-    args.port !== undefined
-      ? args.port
-      : process.env.PORT
-        ? Number(process.env.PORT)
-        : 3011;
+    args.port !== undefined ? args.port : envPort ? Number(envPort) : 3011;
 
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     console.error(`sync-splat: invalid port "${port}"`);

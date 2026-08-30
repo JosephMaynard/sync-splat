@@ -453,7 +453,12 @@ function formatHistory(items: Item[]): string {
     kind: item.kind,
     size: item.kind === "file" ? formatBytes(item.size) : "-",
     age: formatAge(now - item.createdAt),
-    label: item.kind === "file" ? stripControlBytes(item.name) : snippet(item.html),
+    label:
+      item.kind === "file"
+        ? // stripControlBytes keeps tab/newline; collapse those too so a
+          // filename with embedded whitespace can't break the table layout.
+          stripControlBytes(item.name).replace(/[\t\n\r]+/g, " ")
+        : snippet(item.html),
   }));
   const header = { idx: "#", kind: "KIND", size: "SIZE", age: "AGE", label: "NAME / SNIPPET" };
   const all = [header, ...rows];
