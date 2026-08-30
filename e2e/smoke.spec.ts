@@ -66,26 +66,25 @@ test("strips external srcset candidates from a rendered splat", async ({
 
   // A malicious splat mixing a local candidate at 1x with an external beacon at
   // 2x — the sanitizer must not keep the whole srcset just because it starts
-  // with a local URL.
-  await page.evaluate(async () => {
-    await fetch("/api/text", {
+  // with a local URL. A unique alt marker lets us find THIS request's image so
+  // the test can't pass just because no image rendered.
+  const marker = `srcset-check-${Date.now()}`;
+  const status = await page.evaluate(async (m) => {
+    const res = await fetch("/api/text", {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body:
-        '<img src="/favicon.svg" ' +
+        `<img alt="${m}" src="/favicon.svg" ` +
         'srcset="/favicon.svg 1x, http://evil.example/beacon.png 2x">',
     });
-  });
+    return res.status;
+  }, marker);
+  expect(status).toBe(201);
 
-  // No rendered element retains the external candidate.
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const imgs = [...document.querySelectorAll("img[srcset]")];
-        return imgs.some((i) =>
-          (i.getAttribute("srcset") ?? "").includes("evil.example"),
-        );
-      }),
-    )
-    .toBe(false);
+  // The image must actually render (proving the img survived sanitization)…
+  const img = page.locator(`img[alt="${marker}"]`);
+  await expect(img).toBeAttached({ timeout: 5_000 });
+  // …and it must carry no external srcset candidate (our fix drops the whole
+  // attribute when any candidate is external).
+  await expect(img).not.toHaveAttribute("srcset", /evil\.example/);
 });
