@@ -177,8 +177,10 @@ export function registerSocketHandlers(io: SyncSplatIO, deps: SocketDeps): void 
       broadcastScreenState();
     });
 
+    // stop/leave are deliberately NOT rate-limited: they only ever release
+    // state the caller holds (and are no-ops otherwise), and dropping one
+    // would leave a phantom sharer/viewer the client has already torn down.
     socket.on("screen:stop", () => {
-      if (!allowSignal()) return;
       if (sharerId !== socket.id) return;
       endShare();
     });
@@ -213,7 +215,6 @@ export function registerSocketHandlers(io: SyncSplatIO, deps: SocketDeps): void 
     });
 
     socket.on("screen:leave", () => {
-      if (!allowSignal()) return;
       removeViewer(socket.id);
     });
 

@@ -919,3 +919,43 @@ describe("runCli watch stalls", () => {
     expect(errText()).not.toContain("failed to save");
   });
 });
+
+describe("runCli watch output errors", () => {
+  const stubs: EventsStub[] = [];
+  afterEach(async () => {
+    await Promise.all(stubs.splice(0).map((s) => s.close()));
+  });
+
+  it("a failed stdout write is reported, not fatal, and later events still run", async () => {
+    const text = (id: string, html: string) =>
+      sseEvent("item:new", { id, kind: "text", html, createdAt: Date.now() });
+    const stub = await startEventsStub({
+      onConnect: (_req, res) => {
+        res.write(sseEvent("hello", { version: "0.5.0" }));
+        res.write(text("t1", "first"));
+        res.write(text("t2", "second"));
+      },
+    });
+    stubs.push(stub);
+    // Fails the first write (as a closed pipe would), accepts the rest.
+    const written: string[] = [];
+    let calls = 0;
+    const flakyStdout = {
+      write(chunk: string | Buffer, cb: (err?: Error | null) => void) {
+        calls += 1;
+        if (calls === 1) cb(new Error("write EPIPE"));
+        else {
+          written.push(String(chunk));
+          cb();
+        }
+        return true;
+      },
+    } as unknown as NodeJS.WritableStream;
+    const { io, errText, controller } = makeWatchIO({ stdout: flakyStdout });
+    const run = runCli(["watch", "--url", stub.baseUrl], io);
+    await waitFor(() => written.join("").includes("second"));
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(errText()).toContain("write EPIPE");
+  });
+});

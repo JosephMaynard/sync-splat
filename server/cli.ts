@@ -858,7 +858,14 @@ async function downloadItemFile(
     await unlink(tmp).catch(() => {});
     throw err;
   }
-  return placeDownload(dir, safeDownloadName(item.name), tmp);
+  try {
+    return await placeDownload(dir, safeDownloadName(item.name), tmp);
+  } catch (err) {
+    // Placement failed (no free name, a copy error): don't leave the hidden
+    // .part file behind in the user's folder.
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 /** Run a clipboard command with `text` piped to its stdin (no shell), and
@@ -993,9 +1000,20 @@ async function cmdWatch(args: string[], io: CliIO): Promise<number> {
   let queueTail: Promise<void> = Promise.resolve();
   // Once stopping, jobs still queued are dropped rather than started (a
   // download begun after Ctrl-C would only fail with a noisy warning).
+  // Each job's failure is contained here (e.g. stdout closed under
+  // `watch | head`): the chain never rejects, so there's no unhandled
+  // rejection and later events still run.
   const enqueue = (job: () => Promise<void>): void => {
-    const run = () => (io.signal?.aborted ? Promise.resolve() : job());
-    queueTail = queueTail.then(run, run);
+    const run = async (): Promise<void> => {
+      if (io.signal?.aborted) return;
+      try {
+        await job();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await writeAll(io.stderr, `sync-splat: ${message}\n`).catch(() => {});
+      }
+    };
+    queueTail = queueTail.then(run);
   };
 
   const handleItemNew = async (item: Item): Promise<void> => {

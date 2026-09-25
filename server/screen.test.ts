@@ -435,6 +435,28 @@ describe("signal rate limiter", () => {
     expect(acks.filter((r) => r.ok)).toHaveLength(LIMITS.signalRateLimitEvents - 1);
   });
 
+  it("never drops screen:stop or screen:leave, even over the signal budget", async () => {
+    await start();
+    const { sharer, viewers } = await share(2);
+    // Burn both clients' signal budgets on candidates.
+    const candidate: RtcSignalData = { type: "candidate", candidate: null };
+    for (let i = 0; i < LIMITS.signalRateLimitEvents + 5; i += 1) {
+      rawSignal(sharer, { to: viewers[0].id, data: candidate });
+      rawSignal(viewers[1], { to: sharer.id, data: candidate });
+    }
+    await flush(sharer);
+    await flush(viewers[1]);
+
+    // A dropped leave would leave a phantom viewer the client already gave up.
+    viewers[1].socket.emit("screen:leave");
+    await waitUntil(() => sharer.left.includes(viewers[1].id));
+    await waitUntil(() => sharer.screen?.viewers === 1);
+
+    // A dropped stop would leave a phantom sharer blocking everyone else.
+    sharer.socket.emit("screen:stop");
+    await waitUntil(() => viewers[0].screen?.sharer === null);
+  });
+
   it("does not let signal traffic consume the text budget", async () => {
     await start();
     const { sharer, viewers } = await share(1);
