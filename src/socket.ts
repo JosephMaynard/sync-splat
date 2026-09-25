@@ -4,6 +4,10 @@ import type {
   ServerToClientEvents,
 } from "../shared/types";
 import { getToken } from "./auth";
+import { deviceLabel } from "./device";
+
+/** Computed once: the UA doesn't change during a page's life. */
+const DEVICE_LABEL = deviceLabel();
 
 /**
  * Same-origin socket. In production the server serves the client, so `io()`
@@ -17,9 +21,10 @@ import { getToken } from "./auth";
  *
  * `auth` is a callback so the current passcode is re-read on every (re)connect
  * — the token may be entered via the passcode prompt after this module loads.
+ * `device` is our presence label (the server sanitizes it; see shared/types).
  */
 export const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({
   autoConnect: false,
-  auth: (cb: (data: { token?: string }) => void) =>
-    cb({ token: getToken() ?? undefined }),
+  auth: (cb: (data: { token?: string; device: string }) => void) =>
+    cb({ token: getToken() ?? undefined, device: DEVICE_LABEL }),
 });

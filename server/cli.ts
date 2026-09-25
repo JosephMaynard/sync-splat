@@ -7,14 +7,17 @@
 // code and never calls process.exit itself, so it can be driven from tests with
 // captured streams.
 
-import { createReadStream, createWriteStream } from "node:fs";
-import { rename, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, createReadStream, createWriteStream } from "node:fs";
+import { copyFile, link, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { spawn } from "node:child_process";
+import { hostname } from "node:os";
+import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { FileItem, Item, ServerInfo, ServerInfoLocked } from "../shared/types";
-import { AUTH, LIMITS } from "../shared/types";
+import { AUTH, DEVICE_HEADER, EVENTS_PING_MS, LIMITS } from "../shared/types";
+import { SseParser, type SseEvent } from "./sse-parser";
 
 const DEFAULT_URL = "http://localhost:3011";
 
@@ -24,6 +27,18 @@ export interface CliIO {
   stdout: NodeJS.WritableStream;
   stderr: NodeJS.WritableStream;
   stdin: NodeJS.ReadableStream;
+  /** Aborts an in-progress `watch` cleanly (exit 0). bin/sync-splat.js wires
+   *  this to SIGINT/SIGTERM; tests pass their own AbortController so a run
+   *  can be stopped without sending a real signal. */
+  signal?: AbortSignal;
+  /** `watch --copy`'s clipboard runner. Defaults to spawning the platform's
+   *  clipboard tool; tests inject a fake so they never touch the real one. */
+  clipboard?: (text: string) => Promise<void>;
+  /** Test-only overrides for `watch`'s reconnect backoff schedule (ms, last
+   *  value repeats) and watchdog timeout (ms), so reconnect/watchdog tests
+   *  don't have to run at real-world speed. */
+  watchBackoffMs?: number[];
+  watchWatchdogMs?: number;
 }
 
 /** A user-facing error whose message is printed as-is (prefixed "sync-splat:")
@@ -40,6 +55,8 @@ Usage:
   sync-splat history                List recent items (newest first, indexed).
   sync-splat get <index|id>         Print a text item, or stream a file's bytes
                                     to stdout (redirect it: get 0 > out.png).
+  sync-splat watch                  Stream new items live as they arrive
+                                    (Ctrl-C to stop).
 
 Options:
   --url <url>     Server URL (default ${DEFAULT_URL}, or $SYNC_SPLAT_URL).
@@ -51,10 +68,19 @@ Options:
                   when a file with that name exists.
   --out <path>    Write \`get\` output to a file instead of stdout.
   -h, --help      Show this help.
+
+Watch-only options:
+  --json          Emit one NDJSON line per event instead of formatted text.
+  --copy          Copy each new text item's plain text to the system
+                  clipboard (pbcopy/clip/wl-copy/xclip/xsel, whichever the
+                  platform has).
+  --files <dir>   Save new file items into <dir> instead of just naming them.
+  --name <label>  This terminal's presence label (default
+                  "Terminal · <hostname>").
 `;
 
 const CLI_USAGE =
-  'Usage: sync-splat <send|history|get> [options]  (try "sync-splat send --help")\n';
+  'Usage: sync-splat <send|history|get|watch> [options]  (try "sync-splat send --help")\n';
 
 interface ParsedFlags {
   url?: string;
@@ -63,6 +89,14 @@ interface ParsedFlags {
   out?: string;
   text?: boolean;
   help?: boolean;
+  /** watch-only: save new file items into this directory. */
+  files?: string;
+  /** watch-only: presence label for this terminal. */
+  name?: string;
+  /** watch-only: emit NDJSON instead of formatted text. */
+  json?: boolean;
+  /** watch-only: copy each new text item to the system clipboard. */
+  copy?: boolean;
   /** Positional (non-flag) arguments, in order. */
   _: string[];
 }
@@ -720,6 +754,399 @@ async function cmdGet(args: string[], io: CliIO): Promise<number> {
   return 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * watch
+ * ------------------------------------------------------------------------- */
+
+/** Reconnect delays in ms (last value repeats): 1, 2, 4, 8, 15, 15, … */
+const DEFAULT_WATCH_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+
+/** No bytes at all — including `: ping` keep-alives — for this long means the
+ *  connection is dead even though TCP hasn't noticed yet. */
+const DEFAULT_WATCH_WATCHDOG_MS = 2 * EVENTS_PING_MS + 5000;
+
+/** Reduce an item's server-supplied name to a safe basename for saving into
+ *  `--files <dir>`: strip control/NUL bytes, keep only the final path
+ *  segment (defense in depth against a hostile "../../etc/passwd" name —
+ *  the download is also written under `dir` regardless), and prefix a
+ *  leading dot so the saved file is never accidentally hidden from `ls`.
+ *  Falls back to "file" when nothing usable remains. */
+function safeDownloadName(raw: string): string {
+  let name = stripControlBytes(String(raw ?? ""));
+  const slash = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
+  if (slash >= 0) name = name.slice(slash + 1);
+  name = name.replace(/[/\\]/g, "").trim();
+  if (name.startsWith(".")) name = `_${name}`;
+  return name === "" ? "file" : name;
+}
+
+/**
+ * Move `tmpPath` (already fully downloaded into `dir`) to a non-colliding
+ * name, suffixing " (1)", " (2)", … before the extension — the same
+ * collision convention the server itself uses for uploads into a shared
+ * folder (see placeUnique in server/share.ts). Hard-link + unlink makes the
+ * placement atomic (a probe-then-rename could still overwrite a file that
+ * appears between the check and the rename), falling back to an exclusive
+ * copy on filesystems without hard-link support. Resolves with the final path.
+ */
+async function placeDownload(
+  dir: string,
+  name: string,
+  tmpPath: string,
+): Promise<string> {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot) : "";
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  for (let n = 0; n < 10_000; n += 1) {
+    const candidate = n === 0 ? name : `${base} (${n})${ext}`;
+    const target = join(dir, candidate);
+    try {
+      await link(tmpPath, target);
+      await unlink(tmpPath);
+      return target;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") continue;
+      if (code === "EPERM" || code === "ENOTSUP" || code === "ENOSYS") {
+        // No hard links (FAT/exFAT): link() fails whether or not the target
+        // exists, so rename would overwrite. Exclusive copy instead.
+        try {
+          await copyFile(tmpPath, target, fsConstants.COPYFILE_EXCL);
+        } catch (copyErr) {
+          if ((copyErr as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw copyErr;
+        }
+        await unlink(tmpPath);
+        return target;
+      }
+      throw err;
+    }
+  }
+  throw new CliError(`could not find a free file name for "${name}"`);
+}
+
+/** Stream GET /api/file/:id for a newly-arrived file item into `dir`.
+ *  Downloads to a temp file first and only places it under its final,
+ *  collision-safe name once the transfer succeeds, so a failed/partial
+ *  download never leaves a bogus file behind and never overwrites an
+ *  existing one. */
+async function downloadItemFile(
+  baseUrl: string,
+  key: string | undefined,
+  dir: string,
+  item: FileItem,
+): Promise<string> {
+  const res = await request(
+    endpoint(baseUrl, `/api/file/${item.id}`),
+    { headers: authHeaders(key) },
+    baseUrl,
+  );
+  if (!res.ok) throw statusError(res.status, "download");
+
+  const tmp = join(dir, `.sync-splat-${randomUUID()}.part`);
+  try {
+    if (res.body) {
+      const source = Readable.fromWeb(
+        res.body as unknown as Parameters<typeof Readable.fromWeb>[0],
+      );
+      await pipeline(source, createWriteStream(tmp));
+    } else {
+      await writeFile(tmp, Buffer.from(await res.arrayBuffer()));
+    }
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
+  return placeDownload(dir, safeDownloadName(item.name), tmp);
+}
+
+/** Run a clipboard command with `text` piped to its stdin (no shell), and
+ *  resolve/reject once it exits. */
+function spawnClipboard(cmd: string, args: string[], text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} exited with code ${code}`));
+    });
+    // A clipboard tool that exits before reading stdin (e.g. missing display)
+    // would otherwise crash the process on the resulting EPIPE.
+    child.stdin.on("error", () => {});
+    child.stdin.end(text, "utf8");
+  });
+}
+
+/** Default `--copy` clipboard runner: pbcopy on macOS, clip on Windows, and
+ *  on Linux wl-copy under Wayland else xclip falling back to xsel. */
+async function defaultClipboard(text: string): Promise<void> {
+  switch (process.platform) {
+    case "darwin":
+      return spawnClipboard("pbcopy", [], text);
+    case "win32":
+      return spawnClipboard("clip", [], text);
+    case "linux":
+      if (process.env.WAYLAND_DISPLAY) return spawnClipboard("wl-copy", [], text);
+      try {
+        await spawnClipboard("xclip", ["-selection", "clipboard"], text);
+      } catch {
+        await spawnClipboard("xsel", ["--clipboard", "--input"], text);
+      }
+      return;
+    default:
+      throw new Error(`no clipboard tool known for platform "${process.platform}"`);
+  }
+}
+
+/** Resolve after `ms`, or immediately if/when `signal` aborts — so a
+ *  Ctrl-C during a reconnect backoff wait stops right away instead of
+ *  waiting out the delay. */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, ms);
+    const onAbort = () => finish();
+    function finish() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort);
+  });
+}
+
+type WatchAttemptResult =
+  | { kind: "reconnect" }
+  | { kind: "exit"; error: CliError };
+
+async function cmdWatch(args: string[], io: CliIO): Promise<number> {
+  const flags = parseFlags(args, ["url", "key", "files", "name"], ["json", "copy"]);
+  if (flags.help) {
+    await writeAll(io.stdout, CLI_HELP);
+    return 0;
+  }
+  if (flags._.length > 0) {
+    throw new CliError(`watch takes no arguments (got "${flags._[0]}")`);
+  }
+  const { baseUrl, key } = resolveTarget(flags);
+
+  let filesDir: string | undefined;
+  if (flags.files) {
+    filesDir = flags.files;
+    let st;
+    try {
+      st = await stat(filesDir);
+    } catch {
+      throw new CliError(`no such directory: ${filesDir}`);
+    }
+    if (!st.isDirectory()) throw new CliError(`not a directory: ${filesDir}`);
+  }
+
+  const deviceLabel = flags.name ?? `Terminal · ${hostname()}`;
+  const clipboard = io.clipboard ?? defaultClipboard;
+  const backoffSchedule = io.watchBackoffMs ?? DEFAULT_WATCH_BACKOFF_MS;
+  const watchdogMs = io.watchWatchdogMs ?? DEFAULT_WATCH_WATCHDOG_MS;
+
+  let connectedOnce = false;
+  let backoffIndex = 0;
+  let clipboardWarned = false;
+  // A blank line between items (rather than none) keeps a burst of pasted
+  // snippets visually distinguishable in a scrolling terminal, especially
+  // when a text item itself spans multiple lines.
+  let firstHumanLine = true;
+
+  const writeHumanLine = async (text: string): Promise<void> => {
+    const prefix = firstHumanLine ? "" : "\n";
+    firstHumanLine = false;
+    await writeAll(io.stdout, prefix + text);
+  };
+
+  const tryClipboard = async (text: string): Promise<void> => {
+    try {
+      await clipboard(text);
+    } catch (err) {
+      if (clipboardWarned) return;
+      clipboardWarned = true;
+      const message = err instanceof Error ? err.message : String(err);
+      await writeAll(
+        io.stderr,
+        `sync-splat: --copy failed (${message}) — continuing without it\n`,
+      );
+    }
+  };
+
+  // Event handlers run through a single-file promise chain rather than the
+  // raw SSE read loop, so a slow `--files` download can't reorder output
+  // relative to events that arrived after it — and, just as importantly,
+  // doesn't stall reading further bytes off the stream (which would starve
+  // the watchdog reset) while it's in flight.
+  let queueTail: Promise<void> = Promise.resolve();
+  const enqueue = (job: () => Promise<void>): void => {
+    queueTail = queueTail.then(job, job);
+  };
+
+  const handleItemNew = async (item: Item): Promise<void> => {
+    if (flags.json) {
+      await writeAll(io.stdout, `${JSON.stringify({ event: "item:new", item })}\n`);
+    }
+    if (item.kind === "text") {
+      const text = stripControlBytes(htmlToText(item.html));
+      if (flags.copy) await tryClipboard(text);
+      if (!flags.json) await writeHumanLine(`${text}\n`);
+      return;
+    }
+    const name = stripControlBytes(item.name);
+    if (filesDir) {
+      try {
+        const saved = await downloadItemFile(baseUrl, key, filesDir, item);
+        if (!flags.json) await writeHumanLine(`saved: ${saved}\n`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await writeAll(io.stderr, `sync-splat: failed to save "${name}": ${message}\n`);
+      }
+    } else if (!flags.json) {
+      await writeHumanLine(`file: ${name} (${formatBytes(item.size)})\n`);
+    }
+  };
+
+  const handleItemDeleted = async (id: string): Promise<void> => {
+    // Ignored in human mode — there's nothing useful to print about an item
+    // that's already gone, and it's not something --copy/--files act on.
+    if (flags.json) {
+      await writeAll(io.stdout, `${JSON.stringify({ event: "item:deleted", id })}\n`);
+    }
+  };
+
+  const dispatch = async (evt: SseEvent): Promise<void> => {
+    if (evt.event === "hello") {
+      connectedOnce = true;
+      backoffIndex = 0; // backoff resets after a successful hello
+      await writeAll(io.stderr, `watching ${baseUrl} — Ctrl-C to stop\n`);
+      return;
+    }
+    if (evt.event === "item:new") {
+      let item: Item;
+      try {
+        item = JSON.parse(evt.data) as Item;
+      } catch {
+        return; // malformed data line — skip this event, never crash
+      }
+      enqueue(() => handleItemNew(item));
+      return;
+    }
+    if (evt.event === "item:deleted") {
+      let payload: { id?: unknown };
+      try {
+        payload = JSON.parse(evt.data) as { id?: unknown };
+      } catch {
+        return;
+      }
+      if (typeof payload.id !== "string") return;
+      const id = payload.id;
+      enqueue(() => handleItemDeleted(id));
+      return;
+    }
+    // Unknown event types are ignored.
+  };
+
+  async function attemptOnce(): Promise<WatchAttemptResult> {
+    const attemptController = new AbortController();
+    const onExternalAbort = () => attemptController.abort();
+    io.signal?.addEventListener("abort", onExternalAbort);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => attemptController.abort(), watchdogMs);
+    };
+
+    try {
+      let res: Response;
+      try {
+        res = await request(
+          endpoint(baseUrl, "/api/events"),
+          {
+            // Percent-encoded per the contract: Headers rejects any char above
+            // U+00FF outright, and a hostname or --name can easily contain
+            // one (emoji, CJK, accents, ...). The server decodes it back.
+            headers: {
+              ...authHeaders(key),
+              [DEVICE_HEADER]: encodeURIComponent(deviceLabel),
+            },
+            signal: attemptController.signal,
+          },
+          baseUrl,
+        );
+      } catch (err) {
+        if (io.signal?.aborted) return { kind: "reconnect" };
+        // Only a connection failure that has NEVER succeeded exits outright
+        // (the "can't reach it at all" case); once we've connected before,
+        // the same failure just means the server restarted — keep retrying.
+        if (!connectedOnce && err instanceof CliError) {
+          return { kind: "exit", error: err };
+        }
+        return { kind: "reconnect" };
+      }
+
+      if (res.status === 401) return { kind: "exit", error: statusError(401, "watch") };
+      if (res.status === 404) {
+        return {
+          kind: "exit",
+          error: new CliError(
+            "this server doesn't support watch (needs sync-splat ≥ 0.5)",
+          ),
+        };
+      }
+      if (!res.ok || !res.body) return { kind: "reconnect" };
+
+      armWatchdog();
+      const parser = new SseParser();
+      const reader = res.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          armWatchdog();
+          for (const evt of parser.push(value)) {
+            await dispatch(evt);
+          }
+        }
+      } catch {
+        // Covers the watchdog's own abort, an external Ctrl-C abort, and any
+        // genuine mid-stream network error — all handled the same way below.
+      } finally {
+        reader.releaseLock();
+      }
+      return { kind: "reconnect" };
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      io.signal?.removeEventListener("abort", onExternalAbort);
+    }
+  }
+
+  try {
+    while (!io.signal?.aborted) {
+      const result = await attemptOnce();
+      if (result.kind === "exit") throw result.error;
+      if (io.signal?.aborted) break;
+      const waitMs = backoffSchedule[Math.min(backoffIndex, backoffSchedule.length - 1)];
+      await writeAll(io.stderr, `disconnected — reconnecting in ${Math.round(waitMs / 1000)}s\n`);
+      backoffIndex += 1;
+      await delay(waitMs, io.signal);
+    }
+  } finally {
+    // Let any in-flight --files download / --copy call finish before we
+    // return, rather than abandoning it mid-write.
+    await queueTail.catch(() => {});
+  }
+  return 0;
+}
+
 /**
  * Run a CLI client subcommand. `argv[0]` is the subcommand (send|history|get,
  * plus `list` as an alias for history). Returns a process exit code; never
@@ -733,6 +1160,10 @@ export async function runCli(
     stdout: ioOverride?.stdout ?? process.stdout,
     stderr: ioOverride?.stderr ?? process.stderr,
     stdin: ioOverride?.stdin ?? process.stdin,
+    signal: ioOverride?.signal,
+    clipboard: ioOverride?.clipboard,
+    watchBackoffMs: ioOverride?.watchBackoffMs,
+    watchWatchdogMs: ioOverride?.watchWatchdogMs,
   };
   const [subcommand, ...rest] = argv;
 
@@ -750,6 +1181,8 @@ export async function runCli(
         return await cmdHistory(rest, io);
       case "get":
         return await cmdGet(rest, io);
+      case "watch":
+        return await cmdWatch(rest, io);
       default:
         await writeAll(io.stderr, `sync-splat: unknown command "${subcommand}"\n`);
         await writeAll(io.stderr, CLI_USAGE);
