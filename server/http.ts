@@ -300,8 +300,28 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
 
     // socket.io's engine responds to its own paths; it attached to the server
     // before this handler, so both see every request. Never double-respond.
-    if (pathname === "/socket.io" || pathname.startsWith("/socket.io/")) {
+    // Only the "/socket.io/" prefix is engine.io's — bare "/socket.io" is not,
+    // so let it fall through rather than hang with no response.
+    if (pathname.startsWith("/socket.io/")) {
       return;
+    }
+
+    // DNS-rebinding defense: a rebound request carries the attacker's domain in
+    // its Host header, never one of this machine's own names — and browsers
+    // can't forge Host. This guards the GET read routes (same-origin GETs send
+    // no Origin, so the origin check alone can't protect them). Requests
+    // without a Host (rare, non-browser) are allowed. The socket handshake is
+    // separately guarded by the Origin check in allowRequest.
+    const hostHeader = req.headers.host;
+    if (hostHeader) {
+      const hostName = hostHeader
+        .replace(/:\d+$/, "")
+        .toLowerCase()
+        .replace(/^\[|\]$/g, "");
+      if (hostName && !getAllowedHostnames().has(hostName)) {
+        sendStatus(res, 403, "Forbidden");
+        return;
+      }
     }
 
     if (pathname === "/api/info") {

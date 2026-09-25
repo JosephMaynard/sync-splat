@@ -1,6 +1,15 @@
 import type { ServerResponse } from "node:http";
 import { INLINE_IMAGE_MIMES } from "../shared/types";
 
+/** Replace any lone surrogate (from slicing UTF-16 units mid-astral-char) with
+ *  U+FFFD, so encodeURIComponent can't throw a URIError. Equivalent to ES2024's
+ *  String.prototype.toWellFormed, done here without needing that lib target. */
+function wellFormed(value: string): string {
+  return value
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "�")
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "�");
+}
+
 /**
  * Origin check for browser-initiated requests. Requests without an Origin
  * header (curl, CLI tools, same-origin navigations) are allowed. When a
@@ -94,6 +103,7 @@ export function sanitizeFilename(raw: string): string {
   for (const ch of segment) {
     const code = ch.codePointAt(0) ?? 0;
     if (code < 0x20 || code === 0x7f) continue;
+    if (code >= 0x80 && code <= 0x9f) continue; // C1 controls (8-bit CSI/OSC)
     if (code === 0x200e || code === 0x200f) continue;
     if (code >= 0x202a && code <= 0x202e) continue;
     if (code >= 0x2066 && code <= 0x2069) continue;
@@ -111,12 +121,16 @@ export function sanitizeFilename(raw: string): string {
       name = name.slice(0, 180);
     }
   }
+  // Truncation slices UTF-16 units and can leave a lone surrogate; repair it so
+  // downstream encodeURIComponent (in encodeRFC5987) never throws.
+  name = wellFormed(name);
   return name.length > 0 ? name : "file";
 }
 
-/** RFC 5987 encoding for Content-Disposition filename* values. */
+/** RFC 5987 encoding for Content-Disposition filename* values. Repairs any
+ *  lone surrogate first so encodeURIComponent can never throw a URIError. */
 export function encodeRFC5987(value: string): string {
-  return encodeURIComponent(value)
+  return encodeURIComponent(wellFormed(value))
     .replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())
     .replace(/%(7C|60|5E)/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }

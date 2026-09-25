@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -42,6 +43,19 @@ function makeIO(stdin: Buffer | string = "") {
   };
 }
 
+/** An ephemeral port that was just bound and released, so connecting to it is
+ *  refused. (Port 1 won't do: fetch rejects it up front as a "bad port".) */
+async function closedPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as net.AddressInfo;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
 afterEach(async () => {
   if (server) {
     await server.close();
@@ -71,6 +85,39 @@ describe("runCli send/history/get", () => {
     const got = makeIO();
     expect(await runCli(["get", "0", "--url", baseUrl], got.io)).toBe(0);
     expect(got.outText().trim()).toBe("hello splat ✨");
+  });
+
+  it("send joins multiple positionals into one text item", async () => {
+    await start();
+    const send = makeIO();
+    expect(
+      await runCli(["send", "hello", "world", "--url", baseUrl], send.io),
+    ).toBe(0);
+
+    const got = makeIO();
+    await runCli(["get", "0", "--url", baseUrl], got.io);
+    expect(got.outText().trim()).toBe("hello world");
+  });
+
+  it("send --text forces literal text even when a file with that name exists", async () => {
+    await start();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-cli-"));
+    const filePath = path.join(tmpDir, "todo");
+    fs.writeFileSync(filePath, "file contents, not what we want sent");
+
+    const send = makeIO();
+    expect(
+      await runCli(["send", filePath, "--text", "--url", baseUrl], send.io),
+    ).toBe(0);
+
+    const got = makeIO();
+    await runCli(["get", "0", "--url", baseUrl], got.io);
+    // The literal argument (the path string) was sent, not the file's bytes.
+    expect(got.outText().trim()).toBe(filePath);
+
+    const hist = makeIO();
+    await runCli(["history", "--url", baseUrl], hist.io);
+    expect(hist.outText()).toContain("text");
   });
 
   it("send reads text from stdin when the argument is omitted", async () => {
@@ -181,10 +228,9 @@ describe("runCli errors", () => {
   });
 
   it("no server running → friendly connection error, non-zero", async () => {
-    // Port 1 is privileged/unused; the connection is refused fast.
     const io = makeIO();
     const code = await runCli(
-      ["history", "--url", "http://127.0.0.1:1"],
+      ["history", "--url", `http://127.0.0.1:${await closedPort()}`],
       io.io,
     );
     expect(code).not.toBe(0);
@@ -196,6 +242,63 @@ describe("runCli errors", () => {
     const io = makeIO();
     expect(await runCli(["get", "--url", baseUrl], io.io)).not.toBe(0);
   });
+
+  it("a value flag refuses to consume a following flag-like token", async () => {
+    // Without this, `get 0 --out --url http://h` would set out="--url" and
+    // treat the URL as a positional.
+    const io = makeIO();
+    expect(await runCli(["get", "0", "--out", "-x"], io.io)).not.toBe(0);
+    expect(io.errText()).toContain("--out requires a value");
+    expect(io.errText()).toContain("--out=-x");
+  });
+
+  it("rejects unknown single-dash options instead of treating them as positionals", async () => {
+    const io = makeIO();
+    expect(await runCli(["get", "0", "-o", "out.bin"], io.io)).not.toBe(0);
+    expect(io.errText()).toContain('unknown option "-o"');
+  });
+
+  it("get rejects surplus positional arguments", async () => {
+    const io = makeIO();
+    expect(await runCli(["get", "0", "1"], io.io)).not.toBe(0);
+    expect(io.errText()).toContain("single");
+  });
+
+  it("history rejects positional arguments", async () => {
+    const io = makeIO();
+    expect(await runCli(["history", "0"], io.io)).not.toBe(0);
+    expect(io.errText()).toContain("takes no arguments");
+  });
+
+  it("send --text --file is rejected", async () => {
+    const io = makeIO();
+    expect(
+      await runCli(["send", "x", "--text", "--file", "whatever"], io.io),
+    ).not.toBe(0);
+    expect(io.errText()).toContain("--text cannot be combined with --file");
+  });
+
+  it("send from stdin against a down server fails fast with a connection error", async () => {
+    // Regression: getMaxTextBytes used to swallow the connection error, so
+    // `send` would block on stdin forever against a down server. Use a stdin
+    // stream that never ends so a hang would trip the timeout.
+    const outChunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    const sink = (chunks: Buffer[]) =>
+      new Writable({
+        write(chunk, _enc, cb) {
+          chunks.push(Buffer.from(chunk));
+          cb();
+        },
+      });
+    const neverEnds = new Readable({ read() {} });
+    const code = await runCli(
+      ["send", "--url", `http://127.0.0.1:${await closedPort()}`],
+      { stdout: sink(outChunks), stderr: sink(errChunks), stdin: neverEnds },
+    );
+    expect(code).not.toBe(0);
+    expect(Buffer.concat(errChunks).toString("utf8")).toContain("no server at");
+  }, 5000);
 });
 
 describe("runCli against a passcoded server", () => {

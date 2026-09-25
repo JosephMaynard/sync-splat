@@ -47,6 +47,8 @@ Options:
                   passcode is extracted from it automatically.
   --key <token>   Passcode, sent as the ${AUTH.header} header (or $SYNC_SPLAT_KEY).
   --file <path>   Force file upload for \`send\`.
+  --text          Force \`send\` to treat its argument as literal text, even
+                  when a file with that name exists.
   --out <path>    Write \`get\` output to a file instead of stdout.
   -h, --help      Show this help.
 `;
@@ -59,16 +61,26 @@ interface ParsedFlags {
   key?: string;
   file?: string;
   out?: string;
+  text?: boolean;
   help?: boolean;
   /** Positional (non-flag) arguments, in order. */
   _: string[];
 }
 
 /** Minimal flag parser. `valueFlags` are the long options that take a value
- *  (as `--name value` or `--name=value`); everything else is positional. */
-function parseFlags(args: string[], valueFlags: readonly string[]): ParsedFlags {
+ *  (as `--name value` or `--name=value`); `boolFlags` take none; everything
+ *  else is positional. A `--name value` whose value starts with "-" is
+ *  rejected (it is almost always a typo'd/missing value — use `--name=value`
+ *  to pass such a value deliberately), as is any unknown "-" token other than
+ *  a bare "-" (stdin). */
+function parseFlags(
+  args: string[],
+  valueFlags: readonly string[],
+  boolFlags: readonly string[] = [],
+): ParsedFlags {
   const flags: ParsedFlags = { _: [] };
   const valueSet = new Set(valueFlags);
+  const boolSet = new Set(boolFlags);
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
@@ -79,6 +91,11 @@ function parseFlags(args: string[], valueFlags: readonly string[]): ParsedFlags 
     } else if (arg.startsWith("--")) {
       const eq = arg.indexOf("=");
       const name = eq >= 0 ? arg.slice(2, eq) : arg.slice(2);
+      if (boolSet.has(name)) {
+        if (eq >= 0) throw new CliError(`--${name} does not take a value`);
+        (flags as unknown as Record<string, boolean>)[name] = true;
+        continue;
+      }
       if (!valueSet.has(name)) {
         throw new CliError(`unknown option "--${name}"`);
       }
@@ -92,7 +109,14 @@ function parseFlags(args: string[], valueFlags: readonly string[]): ParsedFlags 
       if (value === undefined) {
         throw new CliError(`--${name} requires a value`);
       }
+      if (eq < 0 && value.startsWith("-")) {
+        throw new CliError(
+          `--${name} requires a value but got "${value}" — use --${name}=${value} if that is intentional`,
+        );
+      }
       (flags as unknown as Record<string, string>)[name] = value;
+    } else if (arg.startsWith("-") && arg !== "-") {
+      throw new CliError(`unknown option "${arg}"`);
     } else {
       flags._.push(arg);
     }
@@ -148,10 +172,40 @@ function endpoint(baseUrl: string, pathname: string): string {
   return new URL(pathname, baseUrl).toString();
 }
 
+const CONNECTION_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ETIMEDOUT",
+]);
+
+/** True when a fetch rejection means the server could not be reached, as
+ *  opposed to some other failure (invalid header value, mid-stream error…).
+ *  Node's fetch wraps the network error in `cause`; a multi-address connect
+ *  surfaces an AggregateError whose own `.code` (and member errors) carry the
+ *  syscall codes. */
+function isConnectionFailure(err: unknown): boolean {
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  if (!cause || typeof cause !== "object") return false;
+  const code = (cause as { code?: unknown }).code;
+  if (typeof code === "string" && CONNECTION_ERROR_CODES.has(code)) return true;
+  if (cause instanceof AggregateError) {
+    return cause.errors.some((e) => {
+      const c = (e as { code?: unknown } | null)?.code;
+      return typeof c === "string" && CONNECTION_ERROR_CODES.has(c);
+    });
+  }
+  return false;
+}
+
 /** fetch wrapper that turns "can't reach the server" transport failures into a
  *  friendly CliError. `fetch` only rejects for network/transport problems — an
- *  HTTP error status resolves normally — so any rejection here means we could
- *  not reach the server. HTTP error statuses are left for the caller. */
+ *  HTTP error status resolves normally — so HTTP error statuses are left for
+ *  the caller. Only genuine connection failures get the "no server" message;
+ *  any other rejection (e.g. an invalid header from a non-ASCII --key, or a
+ *  content-length mismatch mid-stream) is rethrown with its real message,
+ *  which undici often hides behind a generic "fetch failed" in `cause`. */
 async function request(
   url: string,
   init: RequestInit,
@@ -159,8 +213,14 @@ async function request(
 ): Promise<Response> {
   try {
     return await fetch(url, init);
-  } catch {
-    throw new CliError(`no server at ${baseUrl} (is it running?)`);
+  } catch (err) {
+    if (isConnectionFailure(err)) {
+      throw new CliError(`no server at ${baseUrl} (is it running?)`);
+    }
+    const cause = (err as { cause?: unknown } | null)?.cause;
+    const causeMessage = cause instanceof Error ? cause.message : undefined;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new CliError(causeMessage ?? message);
   }
 }
 
@@ -215,8 +275,13 @@ async function getMaxTextBytes(
         return info.maxTextBytes;
       }
     }
-  } catch {
-    /* fall through to the default */
+  } catch (err) {
+    // A connection failure must surface: the caller is about to block reading
+    // stdin, and swallowing "no server" here would leave `send` hanging on a
+    // terminal forever against a down server. Only garbled responses (e.g. an
+    // old server whose /api/info isn't JSON) fall back to the default; non-OK
+    // HTTP statuses (401, 404…) never throw and fall through above.
+    if (err instanceof CliError) throw err;
   }
   return LIMITS.maxTextBytes;
 }
@@ -230,6 +295,21 @@ function writeAll(
   return new Promise((resolve, reject) => {
     stream.write(data, (err) => (err ? reject(err) : resolve()));
   });
+}
+
+/** Write a whole buffer to `outPath` atomically: temp file in the same
+ *  directory, then rename into place. Unlike a plain writeFile this never
+ *  writes through a symlink planted at the destination and never leaves a
+ *  partial file behind on failure. */
+async function writeFileAtomic(outPath: string, data: Buffer): Promise<void> {
+  const tmp = `${outPath}.sync-splat-${randomUUID()}.part`;
+  try {
+    await writeFile(tmp, data);
+    await rename(tmp, outPath);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 async function isExistingFile(pathname: string): Promise<boolean> {
@@ -329,6 +409,15 @@ function htmlToText(html: string): string {
   return s.trim();
 }
 
+/** Drop lone control bytes (C0 except tab/newline, DEL, and C1 0x80–0x9f) —
+ *  the same class htmlToText strips — from server-supplied strings before
+ *  printing. Defense-in-depth: don't trust the server to have sanitised
+ *  file names. */
+function stripControlBytes(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+}
+
 function snippet(html: string, max = 60): string {
   const text = htmlToText(html).replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -364,7 +453,12 @@ function formatHistory(items: Item[]): string {
     kind: item.kind,
     size: item.kind === "file" ? formatBytes(item.size) : "-",
     age: formatAge(now - item.createdAt),
-    label: item.kind === "file" ? item.name : snippet(item.html),
+    label:
+      item.kind === "file"
+        ? // stripControlBytes keeps tab/newline; collapse those too so a
+          // filename with embedded whitespace can't break the table layout.
+          stripControlBytes(item.name).replace(/[\t\n\r]+/g, " ")
+        : snippet(item.html),
   }));
   const header = { idx: "#", kind: "KIND", size: "SIZE", age: "AGE", label: "NAME / SNIPPET" };
   const all = [header, ...rows];
@@ -390,10 +484,13 @@ function resolveItem(items: Item[], ref: string): Item | undefined {
 }
 
 async function cmdSend(args: string[], io: CliIO): Promise<number> {
-  const flags = parseFlags(args, ["url", "key", "file"]);
+  const flags = parseFlags(args, ["url", "key", "file"], ["text"]);
   if (flags.help) {
     await writeAll(io.stdout, CLI_HELP);
     return 0;
+  }
+  if (flags.text && flags.file) {
+    throw new CliError("--text cannot be combined with --file");
   }
   const { baseUrl, key } = resolveTarget(flags);
   const positionals = flags._;
@@ -405,10 +502,12 @@ async function cmdSend(args: string[], io: CliIO): Promise<number> {
   }
 
   // Decide file vs. text: --file always uploads; a lone positional that names
-  // an existing file uploads; multiple positionals are always joined as text.
+  // an existing file uploads (unless --text forces literal text); multiple
+  // positionals are always joined as text.
   let filePath = flags.file;
   if (
     !filePath &&
+    !flags.text &&
     positionals.length === 1 &&
     positionals[0] !== "-" &&
     (await isExistingFile(positionals[0]))
@@ -421,15 +520,30 @@ async function cmdSend(args: string[], io: CliIO): Promise<number> {
   }
 
   let text: string;
+  let stdinLimit: number | undefined;
   if (!usesStdin && positionals.length > 0) {
     // Join so `sync-splat send hello world` sends "hello world".
     text = positionals.join(" ");
   } else {
-    const limit = await getMaxTextBytes(baseUrl, key);
-    text = (await readAll(io.stdin, limit)).toString("utf8");
+    stdinLimit = await getMaxTextBytes(baseUrl, key);
+    if ((io.stdin as Partial<{ isTTY: boolean }>).isTTY) {
+      await writeAll(io.stderr, "reading from stdin — press Ctrl-D to end\n");
+    }
+    text = (await readAll(io.stdin, stdinLimit)).toString("utf8");
   }
   if (text.length === 0) {
     throw new CliError("nothing to send (empty input)");
+  }
+
+  // The body is HTML-encoded text, which can expand well beyond the raw input
+  // (& → &amp; is 5×), so check what will actually be sent against the limit
+  // rather than 413-ing after the raw stdin passed readAll's cap.
+  const body = textToHtml(text);
+  if (stdinLimit !== undefined && Buffer.byteLength(body) > stdinLimit) {
+    throw new CliError(
+      `input is ${Buffer.byteLength(body)} bytes once encoded for the server, ` +
+        `larger than the server's limit (${stdinLimit} bytes) — send it as a file instead`,
+    );
   }
 
   const res = await request(
@@ -437,7 +551,7 @@ async function cmdSend(args: string[], io: CliIO): Promise<number> {
     {
       method: "POST",
       headers: { "content-type": "text/plain; charset=utf-8", ...authHeaders(key) },
-      body: textToHtml(text),
+      body,
     },
     baseUrl,
   );
@@ -505,6 +619,9 @@ async function cmdHistory(args: string[], io: CliIO): Promise<number> {
     await writeAll(io.stdout, CLI_HELP);
     return 0;
   }
+  if (flags._.length > 0) {
+    throw new CliError(`history takes no arguments (got "${flags._[0]}")`);
+  }
   const { baseUrl, key } = resolveTarget(flags);
   const res = await request(
     endpoint(baseUrl, "/api/history"),
@@ -529,6 +646,11 @@ async function cmdGet(args: string[], io: CliIO): Promise<number> {
   }
   const ref = flags._[0];
   if (!ref) throw new CliError("get requires an <index|id> argument");
+  if (flags._.length > 1) {
+    throw new CliError(
+      `get takes a single <index|id> argument (unexpected "${flags._[1]}")`,
+    );
+  }
   const { baseUrl, key } = resolveTarget(flags);
 
   const res = await request(
@@ -543,7 +665,7 @@ async function cmdGet(args: string[], io: CliIO): Promise<number> {
 
   if (item.kind === "text") {
     const buf = Buffer.from(`${htmlToText(item.html)}\n`, "utf8");
-    if (flags.out) await writeFile(flags.out, buf);
+    if (flags.out) await writeFileAtomic(flags.out, buf);
     else await writeAll(io.stdout, buf);
     return 0;
   }
@@ -556,8 +678,16 @@ async function cmdGet(args: string[], io: CliIO): Promise<number> {
   if (!dl.ok) throw statusError(dl.status, "get");
   if (!dl.body) {
     const buf = Buffer.from(await dl.arrayBuffer());
-    if (flags.out) await writeFile(flags.out, buf);
-    else await writeAll(io.stdout, buf);
+    if (flags.out) {
+      await writeFileAtomic(flags.out, buf);
+    } else {
+      if ((io.stdout as Partial<{ isTTY: boolean }>).isTTY) {
+        throw new CliError(
+          "refusing to write binary to the terminal — use --out <path> or redirect",
+        );
+      }
+      await writeAll(io.stdout, buf);
+    }
     return 0;
   }
 

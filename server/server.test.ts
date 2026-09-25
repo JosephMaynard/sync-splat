@@ -510,3 +510,72 @@ describe("origin validation is rebinding-resistant", () => {
     expect(failed).toBe(true);
   });
 });
+
+describe("deep-review regression fixes", () => {
+  function rawReq(
+    method: string,
+    pathname: string,
+    headers: Record<string, string> = {},
+  ): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port, path: pathname, method, headers },
+        (res) => {
+          res.resume();
+          res.on("end", () =>
+            resolve({ status: res.statusCode ?? 0, headers: res.headers }),
+          );
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  it("rejects a foreign Host header (DNS-rebinding defense)", async () => {
+    await start();
+    // A rebound request carries the attacker's domain as Host.
+    const evil = await rawReq("GET", "/api/history", { host: "evil.example" });
+    expect(evil.status).toBe(403);
+    // The machine's own name (localhost) is allowed.
+    const ok = await rawReq("GET", "/api/info", { host: "localhost:1234" });
+    expect(ok.status).toBe(200);
+  });
+
+  it("does not hang on bare /socket.io (no trailing slash)", async () => {
+    await start();
+    // Must resolve (engine.io only owns the '/socket.io/' prefix); a hang would
+    // fail the test's own timeout.
+    const res = await rawReq("GET", "/socket.io");
+    expect(typeof res.status).toBe("number");
+  });
+
+  it("serves — not crashes on — a download whose name truncates mid-emoji", async () => {
+    await start();
+    // 179 chars + an astral emoji: the 180-unit cap would split the surrogate
+    // pair, and encodeRFC5987 would throw URIError → uncaught → process exit.
+    const name = "a".repeat(179) + "😀";
+    const up = await fetch(`${baseUrl}/api/upload?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: Buffer.from("%PDF-1.4"),
+    });
+    expect(up.status).toBe(201);
+    const item = (await up.json()) as FileItem;
+    const dl = await fetch(`${baseUrl}/api/file/${item.id}`);
+    expect(dl.status).toBe(200);
+    expect(dl.headers.get("content-disposition")).toContain("filename*=UTF-8''");
+    // Server still alive afterwards.
+    expect((await fetch(`${baseUrl}/api/info`)).status).toBe(200);
+  });
+
+  it("sets a Content-Security-Policy on the served HTML", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-splat-csp-"));
+    fs.writeFileSync(path.join(tmpDir, "index.html"), "<h1>splat</h1>");
+    await start({ clientDir: tmpDir });
+    const root = await rawReq("GET", "/");
+    const csp = root.headers["content-security-policy"] ?? "";
+    expect(csp).toContain("form-action 'none'");
+    expect(csp).toContain("img-src 'self'");
+  });
+});

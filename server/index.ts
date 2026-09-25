@@ -32,9 +32,9 @@ export interface SyncSplatOptions {
   /** Print the startup banner + QR to stdout. Off by default so tests stay
    *  quiet and never depend on the QR encoder. */
   banner?: boolean;
-  /** Shared-folder root. A string shares that directory; null disables sharing
-   *  entirely; undefined (the default) shares process.cwd(), like
-   *  `python -m http.server`. Non-null values must be an existing directory. */
+  /** Shared-folder root. A string shares that directory (which must exist);
+   *  null or undefined disable sharing. Sharing is OFF by default — the CLI
+   *  turns it on with `--share [path]`. */
   shareDir?: string | null;
   /** Passcode. When set, every /api/* route (except /api/info) and every
    *  socket handshake requires a matching key. null/undefined (the default)
@@ -93,12 +93,13 @@ export async function createSyncSplatServer(
   const clientDir =
     opts.clientDir !== undefined ? opts.clientDir : defaultClientDir();
 
-  // Resolve the shared-folder root: null disables sharing; undefined defaults
-  // to cwd; a string shares that dir. Validate + realpath the root once so all
-  // share routes prefix-check against a canonical, symlink-free path.
+  // Resolve the shared-folder root. Sharing is OFF unless an explicit directory
+  // is given: only a string enables it; null/undefined both mean disabled.
+  // Validate + realpath the root once so all share routes prefix-check against
+  // a canonical, symlink-free path.
   let shareDir: string | null = null;
-  if (opts.shareDir !== null) {
-    const requested = opts.shareDir ?? process.cwd();
+  if (typeof opts.shareDir === "string") {
+    const requested = opts.shareDir;
     let stat: fs.Stats;
     try {
       stat = fs.statSync(requested);
