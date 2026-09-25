@@ -56,3 +56,24 @@ describe("createRateLimiter", () => {
     expect(allowB()).toBe(true);
   });
 });
+
+describe("createRateLimiter with a custom max", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("allows exactly `max` events per window", () => {
+    const allow = createRateLimiter(LIMITS.signalRateLimitEvents);
+    for (let i = 0; i < LIMITS.signalRateLimitEvents; i += 1) {
+      expect(allow()).toBe(true);
+    }
+    expect(allow()).toBe(false);
+    vi.setSystemTime(LIMITS.rateLimitWindowMs + 1);
+    expect(allow()).toBe(true);
+  });
+});

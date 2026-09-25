@@ -27,17 +27,19 @@ CLIENT — talk to a running server from the terminal:
   sync-splat send <file>        Upload a file
   sync-splat history            List recent items (indexed, newest first)
   sync-splat get <index|id>     Print text, or stream a file's bytes to stdout
+  sync-splat watch              Stream new items live (Ctrl-C to stop)
 
 Client options: --url <url> (or $SYNC_SPLAT_URL), --key <token> (or
-$SYNC_SPLAT_KEY), --file <path>, --out <path>. Run \`sync-splat send --help\`
-for details.
+$SYNC_SPLAT_KEY), --file <path>, --out <path>. \`watch\` also takes --json,
+--copy, --files <dir>, --name <label>. Run \`sync-splat send --help\` (or
+\`watch --help\`) for details.
 
 Use only on networks you trust: traffic is not encrypted. A passcode (--pin)
 gates access but is not a substitute for TLS.
 `;
 
 // Client subcommands are handled by the CLI client module, not the server path.
-const CLIENT_SUBCOMMANDS = new Set(["send", "history", "get", "list"]);
+const CLIENT_SUBCOMMANDS = new Set(["send", "history", "get", "list", "watch"]);
 
 const userArgs = process.argv.slice(2);
 
@@ -57,7 +59,22 @@ try {
     const { runCli } = await import(cliUrl.href);
     // Set exitCode rather than process.exit so buffered stdout flushes cleanly
     // even when output is redirected to a pipe or file.
-    process.exitCode = await runCli(userArgs);
+    if (userArgs[0] === "watch") {
+      // `watch` runs until interrupted — wire Ctrl-C/kill to an AbortSignal so
+      // it can close the stream and exit 0 instead of dying mid-request.
+      // A second signal while shutting down means "now": exit immediately
+      // with the conventional 128+SIGINT code.
+      const controller = new AbortController();
+      const stop = () => {
+        if (controller.signal.aborted) process.exit(130);
+        controller.abort();
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+      process.exitCode = await runCli(userArgs, { signal: controller.signal });
+    } else {
+      process.exitCode = await runCli(userArgs);
+    }
   } else {
     await runServer(userArgs);
   }

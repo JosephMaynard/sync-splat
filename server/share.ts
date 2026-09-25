@@ -171,8 +171,8 @@ export function handleShareDl(
  * before the extension. Uses hard-link creation, which fails with EEXIST
  * instead of overwriting, so concurrent uploads of the same name can never
  * clobber each other (a probe-then-rename flow could: fs.rename overwrites).
- * Falls back to a plain rename on filesystems without hard links (FAT/exFAT),
- * accepting the tiny race there. Resolves with the final name.
+ * Falls back to an exclusive copy on filesystems without hard links
+ * (FAT/exFAT). Resolves with the final name.
  */
 async function placeUnique(
   dir: string,
@@ -192,8 +192,16 @@ async function placeUnique(
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "EEXIST") continue;
       if (code === "EPERM" || code === "ENOTSUP" || code === "ENOSYS") {
-        // No hard-link support on this filesystem — best-effort rename.
-        await fsp.rename(tmpPath, target);
+        // No hard-link support on this filesystem (FAT/exFAT). link() fails
+        // here whether or not the target exists, so a rename would silently
+        // overwrite; an exclusive copy keeps the never-overwrite guarantee.
+        try {
+          await fsp.copyFile(tmpPath, target, fs.constants.COPYFILE_EXCL);
+        } catch (copyErr) {
+          if ((copyErr as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw copyErr;
+        }
+        await fsp.unlink(tmpPath);
         return candidate;
       }
       throw err;
