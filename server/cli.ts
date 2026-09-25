@@ -835,10 +835,11 @@ async function downloadItemFile(
   key: string | undefined,
   dir: string,
   item: FileItem,
+  signal?: AbortSignal,
 ): Promise<string> {
   const res = await request(
     endpoint(baseUrl, `/api/file/${item.id}`),
-    { headers: authHeaders(key) },
+    { headers: authHeaders(key), signal },
     baseUrl,
   );
   if (!res.ok) throw statusError(res.status, "download");
@@ -849,7 +850,7 @@ async function downloadItemFile(
       const source = Readable.fromWeb(
         res.body as unknown as Parameters<typeof Readable.fromWeb>[0],
       );
-      await pipeline(source, createWriteStream(tmp));
+      await pipeline(source, createWriteStream(tmp), { signal });
     } else {
       await writeFile(tmp, Buffer.from(await res.arrayBuffer()));
     }
@@ -921,6 +922,9 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Longest `watch` waits on in-flight event handling after Ctrl-C. */
+const WATCH_SHUTDOWN_GRACE_MS = 2_000;
+
 type WatchAttemptResult =
   | { kind: "reconnect" }
   | { kind: "exit"; error: CliError };
@@ -987,8 +991,11 @@ async function cmdWatch(args: string[], io: CliIO): Promise<number> {
   // doesn't stall reading further bytes off the stream (which would starve
   // the watchdog reset) while it's in flight.
   let queueTail: Promise<void> = Promise.resolve();
+  // Once stopping, jobs still queued are dropped rather than started (a
+  // download begun after Ctrl-C would only fail with a noisy warning).
   const enqueue = (job: () => Promise<void>): void => {
-    queueTail = queueTail.then(job, job);
+    const run = () => (io.signal?.aborted ? Promise.resolve() : job());
+    queueTail = queueTail.then(run, run);
   };
 
   const handleItemNew = async (item: Item): Promise<void> => {
@@ -1004,9 +1011,12 @@ async function cmdWatch(args: string[], io: CliIO): Promise<number> {
     const name = stripControlBytes(item.name);
     if (filesDir) {
       try {
-        const saved = await downloadItemFile(baseUrl, key, filesDir, item);
+        // Ctrl-C cancels an in-flight download too (its .part file is
+        // removed), so a stalled transfer can't hold up shutdown.
+        const saved = await downloadItemFile(baseUrl, key, filesDir, item, io.signal);
         if (!flags.json) await writeHumanLine(`saved: ${saved}\n`);
       } catch (err) {
+        if (io.signal?.aborted) return;
         const message = err instanceof Error ? err.message : String(err);
         await writeAll(io.stderr, `sync-splat: failed to save "${name}": ${message}\n`);
       }
@@ -1060,12 +1070,20 @@ async function cmdWatch(args: string[], io: CliIO): Promise<number> {
     const onExternalAbort = () => attemptController.abort();
     io.signal?.addEventListener("abort", onExternalAbort);
     let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let watchdogFired = false;
     const armWatchdog = () => {
       if (watchdog) clearTimeout(watchdog);
-      watchdog = setTimeout(() => attemptController.abort(), watchdogMs);
+      watchdog = setTimeout(() => {
+        watchdogFired = true;
+        attemptController.abort();
+      }, watchdogMs);
     };
 
     try {
+      // Armed before the request, not just once the stream is open: a server
+      // that accepts the connection but never sends headers would otherwise
+      // hang this attempt forever.
+      armWatchdog();
       let res: Response;
       try {
         res = await request(
@@ -1083,7 +1101,7 @@ async function cmdWatch(args: string[], io: CliIO): Promise<number> {
           baseUrl,
         );
       } catch (err) {
-        if (io.signal?.aborted) return { kind: "reconnect" };
+        if (io.signal?.aborted || watchdogFired) return { kind: "reconnect" };
         // Only a connection failure that has NEVER succeeded exits outright
         // (the "can't reach it at all" case); once we've connected before,
         // the same failure just means the server restarted — keep retrying.
@@ -1140,9 +1158,13 @@ async function cmdWatch(args: string[], io: CliIO): Promise<number> {
       await delay(waitMs, io.signal);
     }
   } finally {
-    // Let any in-flight --files download / --copy call finish before we
-    // return, rather than abandoning it mid-write.
-    await queueTail.catch(() => {});
+    // Give in-flight work a moment to wind down: downloads abort with the
+    // signal and clean up their .part files, and a --copy may be mid-write.
+    // Bounded, so nothing (e.g. a wedged clipboard tool) can block exit.
+    await Promise.race([
+      queueTail.catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, WATCH_SHUTDOWN_GRACE_MS).unref()),
+    ]);
   }
   return 0;
 }

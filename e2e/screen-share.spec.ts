@@ -176,3 +176,24 @@ test("an open viewer closes with a note when the share ends", async ({
 
   await viewer.context().close();
 });
+
+test("the device list stays inside the viewport on narrow phones", async ({
+  browser,
+}) => {
+  for (const width of [320, 375, 414]) {
+    const context = await browser.newContext({
+      viewport: { width, height: 740 },
+      userAgent: IPHONE_UA,
+    });
+    const page = await context.newPage();
+    await page.goto("/");
+    await page.getByRole("button", { name: /devices online/i }).click();
+    const panel = page.getByRole("region", { name: "Devices online" });
+    await expect(panel).toBeVisible();
+    const box = await panel.boundingBox();
+    expect(box, `width ${width}`).not.toBeNull();
+    expect(box!.x, `left edge at ${width}px`).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width, `right edge at ${width}px`).toBeLessThanOrEqual(width);
+    await context.close();
+  }
+});

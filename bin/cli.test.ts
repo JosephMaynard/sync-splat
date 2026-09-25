@@ -856,3 +856,66 @@ describe("runCli watch against a real server", () => {
     expect(errText()).toMatch(/passcode|key/i);
   });
 });
+
+describe("runCli watch stalls", () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) {
+      s.closeAllConnections();
+      await new Promise((r) => s.close(r));
+    }
+  });
+
+  async function listen(handler: http.RequestListener): Promise<string> {
+    const s = http.createServer(handler);
+    servers.push(s);
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    return `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  }
+
+  it("the watchdog also covers a server that never sends response headers", async () => {
+    let attempts = 0;
+    const url = await listen((req, res) => {
+      attempts += 1;
+      if (attempts === 1) return; // accept, then say nothing at all
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(sseEvent("hello", { version: "0.5.0" }));
+    });
+    const { io, errText, controller } = makeWatchIO({ watchWatchdogMs: 100 });
+    const run = runCli(["watch", "--url", url], io);
+    await waitFor(() => errText().includes("watching"));
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(attempts).toBe(2);
+  });
+
+  it("Ctrl-C cancels a stalled --files download and removes its .part file", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "splat-stall-"));
+    const dir = tmpDir;
+    const url = await listen((req, res) => {
+      if (req.url?.startsWith("/api/events")) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(sseEvent("hello", { version: "0.5.0" }));
+        res.write(
+          sseEvent("item:new", {
+            id: "f1", kind: "file", name: "big.bin", size: 1000,
+            mime: "application/octet-stream", createdAt: Date.now(),
+          }),
+        );
+        return;
+      }
+      // Promise 1000 bytes, deliver 10, then stall forever.
+      res.writeHead(200, { "content-length": "1000" });
+      res.write(Buffer.alloc(10));
+    });
+    const { io, errText, controller } = makeWatchIO({ watchWatchdogMs: 60_000 });
+    const run = runCli(["watch", "--url", url, "--files", dir], io);
+    await waitFor(() => fs.readdirSync(dir).some((f) => f.endsWith(".part")));
+    const stoppedAt = Date.now();
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(Date.now() - stoppedAt).toBeLessThan(1_000);
+    expect(fs.readdirSync(dir)).toEqual([]);
+    expect(errText()).not.toContain("failed to save");
+  });
+});

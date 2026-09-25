@@ -62,8 +62,13 @@ try {
     if (userArgs[0] === "watch") {
       // `watch` runs until interrupted — wire Ctrl-C/kill to an AbortSignal so
       // it can close the stream and exit 0 instead of dying mid-request.
+      // A second signal while shutting down means "now": exit immediately
+      // with the conventional 128+SIGINT code.
       const controller = new AbortController();
-      const stop = () => controller.abort();
+      const stop = () => {
+        if (controller.signal.aborted) process.exit(130);
+        controller.abort();
+      };
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
       process.exitCode = await runCli(userArgs, { signal: controller.signal });

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   CommandLineIcon,
   ComputerDesktopIcon,
@@ -31,7 +31,40 @@ export default function DevicesMenu({ devices, selfId }: Props) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const panelId = useId();
+
+  // Place the panel under the button, right-aligned to it but clamped inside
+  // the viewport. On phones the button isn't the header's last control (theme
+  // and QR sit to its right), so a plain `right-0` pushed the panel's left
+  // edge off-screen. Fixed positioning + measured coordinates keeps it on
+  // screen at every width; recomputed on resize/scroll while open. Written
+  // straight to the panel's style: it's pure layout, not render state.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const btn = buttonRef.current?.getBoundingClientRect();
+      const panel = panelRef.current;
+      if (!btn || !panel) return;
+      const gutter = 16;
+      const vw = document.documentElement.clientWidth;
+      const width = panel.offsetWidth;
+      const left = Math.max(
+        gutter,
+        Math.min(btn.right - width, vw - gutter - width),
+      );
+      panel.style.top = `${btn.bottom + 8}px`;
+      panel.style.left = `${left}px`;
+      panel.style.visibility = "visible";
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
 
   // Escape / outside click close the popover.
   useEffect(() => {
@@ -86,12 +119,13 @@ export default function DevicesMenu({ devices, selfId }: Props) {
 
       {open && (
         <div
+          ref={panelRef}
           id={panelId}
           role="region"
           aria-label="Devices online"
-          // Right-aligned under the button; capped to the viewport so it
-          // never pushes a 375px-wide phone into horizontal scroll.
-          className="absolute right-0 z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-800 dark:bg-gray-900"
+          // Positioned by the layout effect above, which also lifts
+          // `invisible` once measured, so it never paints in the wrong spot.
+          className="invisible fixed left-0 top-0 z-40 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-800 dark:bg-gray-900"
         >
           <p className="px-2 pb-1.5 pt-1 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Devices online
