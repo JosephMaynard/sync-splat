@@ -12,6 +12,7 @@
 export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "sync-splat-theme";
+let sessionPreference: Theme | null = null;
 
 function systemTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -20,8 +21,13 @@ function systemTheme(): Theme {
 }
 
 function storedPreference(): Theme | null {
-  const v = localStorage.getItem(STORAGE_KEY);
-  return v === "light" || v === "dark" ? v : null;
+  if (sessionPreference !== null) return sessionPreference;
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    return v === "light" || v === "dark" ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Apply/remove the `.dark` class on <html> to match a resolved theme. */
@@ -36,7 +42,12 @@ export function getTheme(): Theme {
 
 /** Persist an explicit preference and apply it immediately. */
 export function setTheme(theme: Theme): void {
-  localStorage.setItem(STORAGE_KEY, theme);
+  sessionPreference = theme;
+  try {
+    localStorage.setItem(STORAGE_KEY, theme);
+  } catch {
+    // Storage may be denied or full; the choice still applies this session.
+  }
   applyTheme(theme);
 }
 

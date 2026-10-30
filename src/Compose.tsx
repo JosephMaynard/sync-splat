@@ -42,6 +42,7 @@ export default function Compose({
   onRemoveAttachment,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  const draftRevision = useRef(0);
   const [empty, setEmpty] = useState(true);
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -50,6 +51,7 @@ export default function Compose({
   const disabled = busy || sending || !connected || (empty && !hasAttachments);
 
   const syncEmpty = () => {
+    draftRevision.current += 1;
     const el = ref.current;
     setEmpty(!el || el.textContent?.trim() === "");
     setSendError(null);
@@ -60,6 +62,7 @@ export default function Compose({
     if (!el || disabled) return;
     const hasText = el.textContent?.trim() !== "";
     const html = hasText ? el.innerHTML : null;
+    const submittedRevision = draftRevision.current;
     // Pre-check size before sending so the user's content is never lost.
     if (html) {
       const bytes = new TextEncoder().encode(html).length;
@@ -76,10 +79,12 @@ export default function Compose({
       const result = await onBroadcast(html);
       if (hasText) {
         if (result.textOk) {
-          // Clear only after the server accepts the text, so a rejection
-          // (too-big / rate-limited) leaves the content in place to retry.
-          el.innerHTML = "";
-          setEmpty(true);
+          // An upload may finish after the user edits their next draft. Only
+          // clear the submitted revision, even if edits restored identical HTML.
+          if (draftRevision.current === submittedRevision && el.innerHTML === html) {
+            el.innerHTML = "";
+            setEmpty(true);
+          }
         } else {
           setSendError(result.textError ?? "The server rejected that message.");
         }

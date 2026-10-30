@@ -245,30 +245,24 @@ export default function App() {
     return () => clearTimeout(t);
   }, [uploadError]);
 
-  /* Emit text and await the server ack so we can surface rejections (too-big /
-   * rate-limited / invalid) instead of silently assuming success. A timeout
-   * (old server with no ack) is treated as delivered — the prior behavior. */
+  /* Only an explicit server acknowledgement confirms delivery. Volatile sends
+   * cannot linger in the offline buffer and arrive after a failed attempt. */
   const sendText = useCallback(
-    (html: string): Promise<{ ok: boolean; error?: string }> =>
-      new Promise((resolve) => {
-        let settled = false;
-        const done = (r: { ok: boolean; error?: string }) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(r);
-        };
-        // No ack within the window (e.g. an older server): treat as delivered,
-        // matching the prior fire-and-forget behavior rather than blocking.
-        const timer = setTimeout(() => done({ ok: true }), 8000);
-        socket.emit("text:send", { html }, (ack: ActionAck) => {
-          if (ack && ack.ok === false) {
-            done({ ok: false, error: messageForAck(ack.error) });
-          } else {
-            done({ ok: true });
-          }
-        });
-      }),
+    async (html: string): Promise<{ ok: boolean; error?: string }> => {
+      const unconfirmed = {
+        ok: false,
+        error: "Delivery wasn't confirmed. Your draft is saved here; check history before retrying.",
+      };
+      try {
+        const ack: ActionAck | undefined = await socket.volatile.timeout(8000)
+          .emitWithAck("text:send", { html });
+        if (ack?.ok === true) return { ok: true };
+        if (ack?.ok === false) return { ok: false, error: messageForAck(ack.error) };
+        return unconfirmed;
+      } catch {
+        return unconfirmed;
+      }
+    },
     [],
   );
 

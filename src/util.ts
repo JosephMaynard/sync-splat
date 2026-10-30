@@ -31,11 +31,40 @@ export function middleTruncate(name: string, max = 34): string {
   return `${name.slice(0, head)}…${name.slice(name.length - tail)}`;
 }
 
-/** Derive plain text from an HTML string via a detached element. */
+/** Preserve explicit line breaks and block boundaries without rendering HTML. */
 export function htmlToPlainText(html: string): string {
-  const el = document.createElement("div");
-  el.innerHTML = html;
-  return el.textContent ?? "";
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  let text = "";
+  let blockBreak = false;
+  const blocks = new Set(["ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV",
+    "DL", "DT", "DD", "FIGCAPTION", "FIGURE", "FOOTER", "H1", "H2", "H3",
+    "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P", "PRE",
+    "SECTION", "TABLE", "TR", "UL"]);
+  const append = (value: string) => {
+    if (!value) return;
+    if (blockBreak && text && !text.endsWith("\n")) text += "\n";
+    blockBreak = false;
+    text += value;
+  };
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      append(node.textContent ?? "");
+      return;
+    }
+    if (!(node instanceof Element)) return;
+    if (["SCRIPT", "STYLE", "TEMPLATE"].includes(node.tagName)) return;
+    if (node.tagName === "BR") {
+      append("\n");
+      return;
+    }
+    const block = blocks.has(node.tagName);
+    if (block) blockBreak = true;
+    node.childNodes.forEach(visit);
+    if (block) blockBreak = true;
+  };
+  template.content.childNodes.forEach(visit);
+  return text;
 }
 
 /* -------------------------------------------------------------------------- */

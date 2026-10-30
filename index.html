@@ -13,14 +13,13 @@
     <title>Sync Splat</title>
     <script>
       // Set the theme before first paint to avoid a light/dark flash.
-      try {
-        var t = localStorage.getItem("sync-splat-theme");
-        var dark =
-          t === "dark" ||
-          (t !== "light" &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches);
-        if (dark) document.documentElement.classList.add("dark");
-      } catch (e) {}
+      var t;
+      try { t = localStorage.getItem("sync-splat-theme"); } catch (e) {}
+      var dark =
+        t === "dark" ||
+        (t !== "light" &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches);
+      if (dark) document.documentElement.classList.add("dark");
     </script>
   </head>
   <body>
