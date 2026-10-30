@@ -44,11 +44,14 @@ export function resolveSharePath(root: string, rel: string): string | null {
   try {
     real = fs.realpathSync(resolved);
   } catch {
-    // Nothing exists at the path (upload targets, soon-to-404 reads) — no
-    // symlink can be involved, so the logical path is safe to hand back.
-    return resolved;
+    // All callers resolve an existing file or directory (uploads resolve the
+    // parent). Fail closed for missing targets, broken links and access errors.
+    return null;
   }
   if (real !== root && !real.startsWith(root + path.sep)) return null;
+  if (path.relative(root, real).split(path.sep).some((seg) => seg.startsWith("."))) {
+    return null;
+  }
   return real;
 }
 
@@ -87,9 +90,11 @@ export async function handleShareLs(
   const stats = await Promise.all(
     names.map(async (name): Promise<ShareEntry | null> => {
       if (name.startsWith(".")) return null;
+      const target = resolveSharePath(root, rel ? `${rel}/${name}` : name);
+      if (target === null) return null;
       let st: fs.Stats;
       try {
-        st = await fsp.stat(path.join(abs, name));
+        st = await fsp.stat(target);
       } catch {
         // Broken symlink or a race with deletion — skip silently.
         return null;

@@ -13,6 +13,7 @@ import {
   UUID_RE,
   downloadHeaders,
   isAllowedOrigin,
+  isAllowedHost,
   sanitizeFilename,
   sendJson,
   sendStatus,
@@ -316,17 +317,10 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     // can't forge Host. This guards the GET read routes (same-origin GETs send
     // no Origin, so the origin check alone can't protect them). Requests
     // without a Host (rare, non-browser) are allowed. The socket handshake is
-    // separately guarded by the Origin check in allowRequest.
-    const hostHeader = req.headers.host;
-    if (hostHeader) {
-      const hostName = hostHeader
-        .replace(/:\d+$/, "")
-        .toLowerCase()
-        .replace(/^\[|\]$/g, "");
-      if (hostName && !getAllowedHostnames().has(hostName)) {
-        sendStatus(res, 403, "Forbidden");
-        return;
-      }
+    // separately guarded by Host/Origin checks in engine middleware.
+    if (!isAllowedHost(req.headers.host, getAllowedHostnames())) {
+      sendStatus(res, 403, "Forbidden");
+      return;
     }
 
     if (pathname === "/api/info") {

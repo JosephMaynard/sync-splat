@@ -15,7 +15,7 @@ import { createBroadcastHub } from "./hub";
 import { createPresenceRegistry } from "./presence";
 import { createEventStreams } from "./events";
 import { VERSION, getAllowedHostnames, getLanUrls, getMdnsUrl } from "./net";
-import { isAllowedOrigin } from "./util";
+import { isAllowedHost, isAllowedOrigin } from "./util";
 import { checkSocketKey } from "./auth";
 import { printBanner } from "./banner";
 
@@ -122,18 +122,26 @@ export async function createSyncSplatServer(
     // Same-origin in prod (server serves the client); Vite proxy in dev.
     // No CORS configuration by design.
     serveClient: false,
-    // WebSocket handshakes are not subject to CORS, so enforce the origin
-    // ourselves: the Origin's hostname must be one of this machine's own
-    // addresses (never the spoofable Host header — DNS rebinding can make
-    // Origin and Host agree on an attacker domain). CLI/native clients,
-    // which send no Origin, remain able to connect.
-    allowRequest: (req, callback) => {
-      callback(null, isAllowedOrigin(req.headers.origin, getAllowedHostnames()));
-    },
   });
 
-  // Passcode gate for socket handshakes. The origin check lives in allowRequest
-  // (engine.io level, before the handshake auth exists); the key travels in the
+  // Engine middleware runs on handshakes, upgrades AND existing polling
+  // sessions. allowRequest alone only guards the initial handshake. Check
+  // Host independently: same-origin polling GETs need not carry Origin.
+  io.engine.use((req: http.IncomingMessage, res: http.ServerResponse, next: (err?: Error) => void) => {
+    const allowed = getAllowedHostnames();
+    if (
+      !isAllowedHost(req.headers.host, allowed) ||
+      !isAllowedOrigin(req.headers.origin, allowed)
+    ) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+    next();
+  });
+
+  // Passcode gate for socket handshakes. Host/Origin checks run in engine
+  // middleware before handshake auth exists; the key travels in the
   // socket.io CONNECT packet's `auth.token`, only readable here in middleware.
   // A rejection surfaces to the client as connect_error, same as an origin
   // rejection. No-op when no passcode is set.

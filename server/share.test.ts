@@ -329,6 +329,45 @@ describe("POST /api/share/upload", () => {
     expect(dl.status).toBe(200);
     expect(await dl.text()).toBe("inside");
   });
+
+  it("hides aliases to dotfiles and dot-directories from listings, reads and writes", async () => {
+    await startShared();
+    fs.symlinkSync(".hidden", path.join(shareRoot!, "secret-alias"));
+    fs.symlinkSync(".git", path.join(shareRoot!, "dir-alias"));
+    fs.symlinkSync("dir-alias", path.join(shareRoot!, "chained-alias"));
+    fs.symlinkSync(".git/config", path.join(shareRoot!, "config-alias"));
+    const root = await fetch(`${baseUrl}/api/share/ls`);
+    const listing = await root.json() as ShareListing;
+    expect(listing.entries.some((e) => e.name.endsWith("-alias"))).toBe(false);
+    for (const rel of ["secret-alias", "config-alias", "dir-alias/config", "chained-alias/config"]) {
+      for (const method of ["GET", "HEAD"]) {
+        expect((await fetch(`${baseUrl}/api/share/dl?${q("path", rel)}`, { method })).status).toBe(404);
+      }
+    }
+    for (const rel of ["dir-alias", "chained-alias"]) {
+      expect((await fetch(`${baseUrl}/api/share/ls?${q("path", rel)}`)).status).toBe(404);
+      const upload = await fetch(`${baseUrl}/api/share/upload?${q("dir", rel)}&name=forbidden.txt`, {
+        method: "POST", body: "must not write",
+      });
+      expect(upload.status).toBe(404);
+    }
+    expect(fs.existsSync(path.join(shareRoot!, ".git", "forbidden.txt"))).toBe(false);
+    expect(fs.readFileSync(path.join(shareRoot!, ".git", "config"), "utf8")).toBe("[core]");
+  });
+
+  it("keeps visible directory aliases usable for listing, downloading and uploading", async () => {
+    await startShared();
+    fs.symlinkSync("sub", path.join(shareRoot!, "visible-alias"));
+    const ls = await fetch(`${baseUrl}/api/share/ls?path=visible-alias`);
+    expect(ls.status).toBe(200);
+    expect((await ls.json() as ShareListing).entries.map((e) => e.name)).toContain("nested.txt");
+    expect(await (await fetch(`${baseUrl}/api/share/dl?path=visible-alias/nested.txt`)).text()).toBe("nested");
+    const upload = await fetch(`${baseUrl}/api/share/upload?dir=visible-alias&name=new.txt`, {
+      method: "POST", body: "visible content",
+    });
+    expect(upload.status).toBe(201);
+    expect(fs.readFileSync(path.join(shareRoot!, "sub", "new.txt"), "utf8")).toBe("visible content");
+  });
 });
 
 describe("sharing disabled (shareDir: null)", () => {

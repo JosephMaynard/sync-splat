@@ -38,6 +38,24 @@ export function isAllowedOrigin(
   }
 }
 
+/** Host validation also protects same-origin polling GETs, which omit Origin. */
+export function isAllowedHost(
+  host: string | undefined,
+  allowedHostnames: ReadonlySet<string>,
+): boolean {
+  // Preserve support for native HTTP clients that omit Host.
+  if (host === undefined) return true;
+  if (!host || /[\s/\\?#@]/.test(host)) return false;
+  try {
+    const hostname = new URL(`http://${host}`).hostname
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "");
+    return allowedHostnames.has(hostname);
+  } catch {
+    return false;
+  }
+}
+
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
