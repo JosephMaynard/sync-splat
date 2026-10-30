@@ -4,10 +4,17 @@ import {
   ArrowUpTrayIcon,
   SunIcon,
   MoonIcon,
+  ComputerDesktopIcon,
 } from "@heroicons/react/24/outline";
 import { socket } from "./socket";
 import { getTheme, toggleTheme, watchSystemTheme, type Theme } from "./theme";
-import type { ActionAck, Item, ServerInfo, ServerInfoLocked } from "../shared/types";
+import type {
+  ActionAck,
+  Device,
+  Item,
+  ServerInfo,
+  ServerInfoLocked,
+} from "../shared/types";
 import { LIMITS } from "../shared/types";
 import HistoryItem from "./HistoryItem";
 import Compose from "./Compose";
@@ -18,6 +25,12 @@ import Logo from "./Logo";
 import { humanSize } from "./util";
 import { authHeaders, setToken, clearToken } from "./auth";
 import { uploadWithProgress } from "./upload";
+import { messageForAck } from "./messages";
+import { canShareScreen } from "./rtc";
+import { useScreenShare } from "./screenShare";
+import DevicesMenu from "./DevicesMenu";
+import ScreenViewer from "./ScreenViewer";
+import ScreenShareBanner from "./ScreenShareBanner";
 
 /** Result of a broadcast: whether the (optional) text send succeeded. */
 export interface BroadcastResult {
@@ -25,22 +38,10 @@ export interface BroadcastResult {
   textError?: string;
 }
 
-/** Error string carried by a rejected ActionAck. */
-type AckError = Extract<ActionAck, { ok: false }>["error"];
-
-/** Human-readable message for a rejected action ack. */
-function messageForAck(error: AckError): string {
-  switch (error) {
-    case "too-big":
-      return "Too big to send. Try attaching it as a file instead.";
-    case "rate-limited":
-      return "You're sending too fast — wait a moment and try again.";
-    case "not-found":
-      return "That item no longer exists.";
-    default:
-      return "The server rejected that message.";
-  }
-}
+/** Capability, not hostname: getDisplayMedia needs a secure context, which
+ *  on plain-http LAN means only http://localhost on the server machine (and
+ *  iOS has no getDisplayMedia at all). Fixed for the page's lifetime. */
+const CAN_SHARE_SCREEN = canShareScreen();
 
 /** Client-local id for staged attachments. crypto.randomUUID is unavailable
  *  in insecure contexts (http:// on a phone — our primary use case). */
@@ -87,6 +88,12 @@ export default function App() {
   const [authState, setAuthState] = useState<"checking" | "ok" | "locked">(
     "checking",
   );
+  const [devices, setDevices] = useState<Device[]>([]);
+
+  // Screen sharing. Must stay ABOVE the socket lifecycle effect below: its
+  // listeners (screen:state arrives on connect) have to be registered before
+  // that effect calls socket.connect(). Effects run in declaration order.
+  const screenShare = useScreenShare(socket, authState === "ok");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -185,8 +192,14 @@ export default function App() {
       );
     const onDeleted = (id: string) =>
       setHistory((prev) => prev.filter((it) => it.id !== id));
+    const onPresence = (list: Device[]) =>
+      setDevices(Array.isArray(list) ? list : []);
     const onConnect = () => setConnected(true);
-    const onDisconnect = () => setConnected(false);
+    const onDisconnect = () => {
+      setConnected(false);
+      // Stale while offline; the reconnect's presence event repopulates it.
+      setDevices([]);
+    };
     const onConnectError = (err: Error) => {
       // The server's socket middleware rejects a bad key with
       // Error("unauthorized"); that alone proves a passcode is in play, even
@@ -202,6 +215,7 @@ export default function App() {
     socket.on("history", onHistory);
     socket.on("item:new", onNew);
     socket.on("item:deleted", onDeleted);
+    socket.on("presence", onPresence);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
     socket.on("connect_error", onConnectError);
@@ -214,6 +228,7 @@ export default function App() {
       socket.off("history", onHistory);
       socket.off("item:new", onNew);
       socket.off("item:deleted", onDeleted);
+      socket.off("presence", onPresence);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
       socket.off("connect_error", onConnectError);
@@ -451,9 +466,15 @@ export default function App() {
     return <PasscodePrompt onSubmit={retryAuth} />;
   }
 
+  // Read at render time, never cached: socket.id changes on every reconnect.
+  // Renders follow connect/presence events, so this stays current.
+  const selfId = connected ? socket.id : undefined;
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-gray-100 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-gray-800 dark:bg-gray-900">
+      {/* Below sm the tabs wrap onto their own full-width row: logo + tabs +
+          status/devices/theme/QR don't fit side by side on a 375px phone. */}
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-gray-200 bg-white px-4 py-3 sm:flex-nowrap sm:px-6 dark:border-gray-800 dark:bg-gray-900">
         <div className="flex items-center gap-2">
           <Logo className="h-8 w-8 text-blue-600 dark:text-blue-500" />
           <h1 className="text-xl font-bold sm:text-2xl">Sync Splat</h1>
@@ -462,7 +483,7 @@ export default function App() {
           <div
             role="tablist"
             aria-label="Splats and files"
-            className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-0.5 dark:border-gray-800 dark:bg-gray-800/50"
+            className="order-last flex w-full rounded-lg border border-gray-200 bg-gray-100 p-0.5 sm:order-none sm:inline-flex sm:w-auto dark:border-gray-800 dark:bg-gray-800/50"
           >
             {(["splats", "files"] as const).map((t) => (
               <button
@@ -492,7 +513,7 @@ export default function App() {
                   setTab(next);
                   tabRefs.current[next]?.focus();
                 }}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
+                className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium capitalize sm:flex-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
                   tab === t
                     ? "bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100"
                     : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
@@ -503,7 +524,10 @@ export default function App() {
             ))}
           </div>
         )}
-        <div className="flex items-center gap-3">
+        {/* ml-auto keeps this group right-aligned even when it wraps onto
+            its own row (very narrow screens), so popovers anchored to its
+            right edge stay on-screen. */}
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
           <span
             className="flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400"
             title={connected ? "Connected" : "Reconnecting"}
@@ -518,10 +542,29 @@ export default function App() {
               {connected ? "connected" : "reconnecting…"}
             </span>
           </span>
+          <DevicesMenu devices={devices} selfId={selfId} />
+          {/* Only where capture is possible (see CAN_SHARE_SCREEN), and only
+              while nobody is sharing — one share at a time. */}
+          {CAN_SHARE_SCREEN &&
+            connected &&
+            !screenShare.screen.sharer &&
+            screenShare.sharing !== "live" && (
+              <button
+                type="button"
+                onClick={screenShare.startShare}
+                disabled={screenShare.sharing === "starting"}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:cursor-wait disabled:opacity-60 sm:px-3 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                aria-label="Share screen"
+                title="Share your screen with devices on this network"
+              >
+                <ComputerDesktopIcon className="size-5" aria-hidden="true" />
+                <span className="hidden lg:inline">Share screen</span>
+              </button>
+            )}
           <button
             type="button"
             onClick={onToggleTheme}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 sm:px-3 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           >
@@ -534,7 +577,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setShowQr(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 sm:px-3 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             title="Show QR code"
           >
             <QrCodeIcon className="size-5" aria-hidden="true" />
@@ -542,6 +585,12 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <ScreenShareBanner
+        share={screenShare}
+        selfId={selfId}
+        devices={devices}
+      />
 
       <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-y-auto p-4 sm:p-6 md:min-h-0 md:grid-cols-2 md:overflow-hidden">
         {/* compose column — editor scrolls, controls pinned in Compose's footer */}
@@ -623,6 +672,14 @@ export default function App() {
       </main>
 
       {showQr && <QrModal onClose={() => setShowQr(false)} />}
+
+      {screenShare.viewer && screenShare.viewer.status !== "joining" && (
+        <ScreenViewer
+          viewer={screenShare.viewer}
+          onClose={screenShare.closeViewer}
+          onRetry={screenShare.retryWatch}
+        />
+      )}
 
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-40 grid place-items-center bg-blue-600/10 p-8 dark:bg-blue-500/10">

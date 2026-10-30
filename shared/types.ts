@@ -57,18 +57,144 @@ export interface ShareListing {
  *  clients that pass no callback keep the previous silent-drop behavior. */
 export type ActionAck =
   | { ok: true; id: string }
-  | { ok: false; error: "invalid" | "too-big" | "rate-limited" | "not-found" };
+  | {
+      ok: false;
+      error:
+        | "invalid"
+        | "too-big"
+        | "rate-limited"
+        | "not-found"
+        /** screen:start while someone else is already sharing. */
+        | "busy"
+        /** screen:join when the share already has LIMITS.maxScreenViewers. */
+        | "full";
+    };
+
+/* ---------------------------------------------------------------------------
+ * Presence
+ *
+ * Every connected browser socket and every `sync-splat watch` event stream is
+ * a Device. Browsers send a self-chosen label in the socket handshake
+ * (`auth: { token, device }`); terminals send it in the X-Splat-Device header
+ * on GET /api/events. The server sanitizes labels (see sanitizeDeviceLabel
+ * rules in server/presence.ts) and broadcasts the full list on every change.
+ * ------------------------------------------------------------------------- */
+
+export interface Device {
+  /** socket.id for browsers; a server-generated id for terminal streams.
+   *  Browsers use their own socket.id to find themselves in the list. */
+  id: string;
+  /** Sanitized, ≤ LIMITS.maxDeviceLabelChars, e.g. "iPhone · Safari". */
+  label: string;
+  kind: "browser" | "terminal";
+  /** Connected from a loopback address, i.e. the machine running the server. */
+  host: boolean;
+}
+
+/* ---------------------------------------------------------------------------
+ * Screen sharing
+ *
+ * One share at a time. The sharer's browser captures with getDisplayMedia
+ * (needs a secure context — in practice http://localhost on the server
+ * machine) and holds one RTCPeerConnection per viewer. Media flows peer to
+ * peer; the server only relays signaling and never sees video.
+ *
+ * Flow:
+ *   sharer  → screen:start (ack)          server → all: screen:state {sharer}
+ *   viewer  → screen:join  (ack)          server → sharer: screen:viewer-joined
+ *   sharer  → rtc:signal {to: viewer, data: offer}
+ *   viewer  → rtc:signal {to: sharer, data: answer}
+ *   both    → rtc:signal {…, data: ice candidate} (trickle)
+ *   viewer  → screen:leave                server → sharer: screen:viewer-left
+ *   sharer  → screen:stop | disconnects   server → all: screen:state {sharer: null}
+ *
+ * The server relays rtc:signal ONLY between the current sharer and one of its
+ * joined viewers, stamps `from` itself (never trusts the client), and drops
+ * payloads over LIMITS.maxSignalBytes. Viewers that disconnect are removed and
+ * the sharer gets screen:viewer-left.
+ * ------------------------------------------------------------------------- */
+
+export interface ScreenState {
+  /** The device currently sharing, or null when nobody is. */
+  sharer: Device | null;
+  /** Number of joined viewers. */
+  viewers: number;
+}
+
+/** Opaque WebRTC signaling payload relayed verbatim. The server checks only
+ *  that it is a plain object under LIMITS.maxSignalBytes when JSON-encoded. */
+export type RtcSignalData =
+  | { type: "offer" | "answer"; sdp: string }
+  | { type: "candidate"; candidate: IceCandidate | null };
+
+/** Structural copy of the DOM's RTCIceCandidateInit so this file stays
+ *  DOM-free for the server build. */
+export interface IceCandidate {
+  candidate?: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
+}
 
 export interface ServerToClientEvents {
   history: (items: Item[]) => void;
   "item:new": (item: Item) => void;
   "item:deleted": (id: string) => void;
+  /** Full device list; sent to everyone on connect and on every change. */
+  presence: (devices: Device[]) => void;
+  /** Sent to everyone on connect and whenever sharer/viewer count changes. */
+  "screen:state": (state: ScreenState) => void;
+  /** Sharer only: a viewer wants the stream — create a peer and offer. */
+  "screen:viewer-joined": (viewerId: string) => void;
+  /** Sharer only: tear down that viewer's peer connection. */
+  "screen:viewer-left": (viewerId: string) => void;
+  /** Relayed signaling; `from` is stamped by the server. */
+  "rtc:signal": (msg: { from: string; data: RtcSignalData }) => void;
 }
 
 export interface ClientToServerEvents {
   "text:send": (payload: { html: string }, ack?: (r: ActionAck) => void) => void;
   "item:delete": (id: string, ack?: (r: ActionAck) => void) => void;
+  /** Become the sharer. ack ok → id is the sharer's socket id; "busy" if
+   *  someone else is sharing. Idempotent for the current sharer. */
+  "screen:start": (ack?: (r: ActionAck) => void) => void;
+  /** Stop sharing (no-op unless the caller is the sharer). */
+  "screen:stop": () => void;
+  /** Ask to watch. ack ok → id is the sharer's socket id; "not-found" if
+   *  nobody is sharing; "full" at the viewer cap; "invalid" if the caller is
+   *  the sharer. */
+  "screen:join": (ack?: (r: ActionAck) => void) => void;
+  /** Stop watching (no-op unless joined). */
+  "screen:leave": () => void;
+  "rtc:signal": (msg: { to: string; data: RtcSignalData }) => void;
 }
+
+/* ---------------------------------------------------------------------------
+ * Terminal event stream: GET /api/events (Server-Sent Events)
+ *
+ * Used by `sync-splat watch`. Same passcode gate as /api/history; no Origin
+ * requirement beyond what /api/history has (it is a read). Optional
+ * X-Splat-Device header sets the terminal's presence label (default
+ * "Terminal"). Response is text/event-stream with these events, each `data:`
+ * a single JSON line:
+ *
+ *   event: hello         data: {"version": "...", "maxFileBytes": n}
+ *   event: item:new      data: Item
+ *   event: item:deleted  data: {"id": "..."}
+ *
+ * plus a `: ping` comment every EVENTS_PING_MS so idle proxies and the client
+ * can detect a dead connection. No history snapshot is sent: watch reports
+ * only what arrives after it connects (use `history` for the backlog).
+ * ------------------------------------------------------------------------- */
+
+export const EVENTS_PING_MS = 25_000;
+
+/** Header a terminal client uses to name itself in the presence list.
+ *  Header values are bytes (Node's fetch rejects characters above U+00FF,
+ *  and the server reads them as latin1), so send the label
+ *  percent-encoded — `encodeURIComponent(label)`. The server decodes it;
+ *  a value that isn't valid percent-encoding is used literally. */
+export const DEVICE_HEADER = "x-splat-device";
 
 /** Auth transport when a passcode is set (see AUTH):
  *  - HTTP: `X-Splat-Key` header, or the `splat-key` cookie (for <a>/<img>).
@@ -134,6 +260,18 @@ export const LIMITS = {
   rateLimitEvents: 30,
   /** Rate limit window in ms. */
   rateLimitWindowMs: 10_000,
+  /** Separate per-socket budget for screen:* and rtc:signal events (same
+   *  window). ICE trickle bursts would starve the text limiter otherwise. */
+  signalRateLimitEvents: 300,
+  /** Max JSON-encoded size of one rtc:signal `data` payload. SDPs are ~2–10 KB. */
+  maxSignalBytes: 64 * 1024,
+  /** Max simultaneous viewers of a screen share (each costs the sharer an
+   *  encode). */
+  maxScreenViewers: 8,
+  /** Max length of a presence label, in characters, after sanitizing. */
+  maxDeviceLabelChars: 40,
+  /** Max concurrent GET /api/events streams (terminal watchers). */
+  maxEventStreams: 16,
 } as const;
 
 /** Image MIME types safe to serve inline (for thumbnails). Everything else

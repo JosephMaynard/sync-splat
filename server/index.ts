@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import type {
   ClientToServerEvents,
-  Item,
   ServerToClientEvents,
 } from "../shared/types";
 import { LIMITS } from "../shared/types";
@@ -12,6 +11,9 @@ import { HistoryStore } from "./store";
 import { createStaticHandler } from "./static";
 import { createRequestHandler } from "./http";
 import { registerSocketHandlers, type SyncSplatIO } from "./socket";
+import { createBroadcastHub } from "./hub";
+import { createPresenceRegistry } from "./presence";
+import { createEventStreams } from "./events";
 import { VERSION, getAllowedHostnames, getLanUrls, getMdnsUrl } from "./net";
 import { isAllowedOrigin } from "./util";
 import { checkSocketKey } from "./auth";
@@ -147,11 +149,20 @@ export async function createSyncSplatServer(
   const getUrls = () => getLanUrls(boundPort);
   const mdnsUrl = () => getMdnsUrl(boundPort);
 
+  // Every history change goes out through the hub, so socket clients and
+  // terminal event streams always see the same sequence.
+  const hub = createBroadcastHub(io);
+  const presence = createPresenceRegistry((devices) =>
+    io.emit("presence", devices),
+  );
+
   const store = new HistoryStore({
     maxItems: LIMITS.maxItems,
     maxTotalFileBytes: LIMITS.maxTotalFileBytes,
-    onEvicted: (id) => io.emit("item:deleted", id),
+    onEvicted: (id) => hub.itemDeleted(id),
   });
+
+  const events = createEventStreams({ hub, presence, maxFileBytes });
 
   const staticHandler = createStaticHandler(clientDir);
   const requestHandler = createRequestHandler({
@@ -160,7 +171,8 @@ export async function createSyncSplatServer(
     getUrls,
     getAllowedHostnames,
     maxFileBytes,
-    onItemCreated: (item: Item) => io.emit("item:new", item),
+    hub,
+    events,
     shareDir,
     token,
     getMdnsUrl: mdnsUrl,
@@ -179,7 +191,7 @@ export async function createSyncSplatServer(
   });
   httpServer.on("request", requestHandler);
 
-  registerSocketHandlers(io, store);
+  registerSocketHandlers(io, { store, hub, presence });
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => reject(err);
@@ -201,6 +213,9 @@ export async function createSyncSplatServer(
     urls,
     hasClient: staticHandler.hasClient,
     close(): Promise<void> {
+      // Open event streams never end on their own; httpServer.close() (inside
+      // io.close) would wait on them forever.
+      events.closeAll();
       return new Promise<void>((resolve) => {
         io.close(() => resolve());
       });

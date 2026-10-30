@@ -52,6 +52,15 @@ describe("bin/sync-splat.js", () => {
     expect(stdout).toContain("--share");
   });
 
+  it("--help mentions the watch client subcommand", async () => {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [binPath, "--help"],
+      { cwd: repoRoot, timeout: 10_000 },
+    );
+    expect(stdout).toContain("sync-splat watch");
+  });
+
   it("--share on a missing folder exits 1 with a clear error", async () => {
     await expect(
       execFileAsync(

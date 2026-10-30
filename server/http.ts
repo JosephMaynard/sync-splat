@@ -1,9 +1,11 @@
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { FileItem, Item } from "../shared/types";
+import type { FileItem } from "../shared/types";
 import { LIMITS } from "../shared/types";
 import type { HistoryStore } from "./store";
 import type { StaticHandler } from "./static";
+import type { BroadcastHub } from "./hub";
+import type { EventStreams } from "./events";
 import { VERSION } from "./net";
 import { checkKey, requireKey } from "./auth";
 import { handleShareDl, handleShareLs, handleShareUpload } from "./share";
@@ -35,8 +37,10 @@ export interface RequestHandlerOptions {
    *  interface changes (DHCP, Wi-Fi) are honoured. */
   getAllowedHostnames: () => ReadonlySet<string>;
   maxFileBytes: number;
-  /** Broadcast a freshly-created item to all connected clients. */
-  onItemCreated: (item: Item) => void;
+  /** The one broadcast path for history changes (sockets + SSE streams). */
+  hub: BroadcastHub;
+  /** Open GET /api/events streams (terminal watchers). */
+  events: EventStreams;
   /** Realpath'd root of the shared folder, or null when sharing is disabled
    *  (all /api/share/* routes then 404). */
   shareDir: string | null;
@@ -62,7 +66,8 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
     getUrls,
     getAllowedHostnames,
     maxFileBytes,
-    onItemCreated,
+    hub,
+    events,
     shareDir,
     getMdnsUrl,
     onNetworkRefresh,
@@ -178,7 +183,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       if (aborted) return;
       const buffer = Buffer.concat(chunks, total);
       const item = store.addFile(name, mime, buffer);
-      onItemCreated(item);
+      hub.itemNew(item);
       sendJson(res, 201, item);
     });
 
@@ -261,7 +266,7 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
         return;
       }
       const item = store.addText(html);
-      onItemCreated(item);
+      hub.itemNew(item);
       sendJson(res, 201, item);
     });
 
@@ -376,6 +381,26 @@ export function createRequestHandler(opts: RequestHandlerOptions): RequestHandle
       }
       if (!requireKey(req, res, token)) return;
       sendJson(res, 200, store.getHistory());
+      return;
+    }
+
+    if (pathname === "/api/events") {
+      if (req.method !== "GET") {
+        sendStatus(res, 405, "Method not allowed");
+        return;
+      }
+      // A read, gated like /api/history — plus an Origin check, because
+      // unlike a history read, opening a stream has a side effect (a
+      // presence entry, a slot under the stream cap). A cross-site page's
+      // EventSource couldn't read the response anyway, but without this it
+      // could still show up in every device list and hold slots open.
+      // `sync-splat watch` sends no Origin, so it is unaffected.
+      if (!isAllowedOrigin(req.headers.origin, getAllowedHostnames())) {
+        sendStatus(res, 403, "Cross-origin requests are not allowed");
+        return;
+      }
+      if (!requireKey(req, res, token)) return;
+      events.handle(req, res);
       return;
     }
 

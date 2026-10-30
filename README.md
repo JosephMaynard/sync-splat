@@ -5,6 +5,8 @@
   Run one command, scan the QR code on your phone, and splat things back and forth — no accounts, no cloud, no cables.</p>
 
   <pre><code>npx sync-splat</code></pre>
+
+  <p><a href="https://ko-fi.com/magiczebra"><img src="https://img.shields.io/badge/Ko--fi-Support%20sync--splat-ff5e5b?logo=ko-fi&logoColor=white" alt="Support sync-splat on Ko-fi" /></a></p>
 </div>
 
 ---
@@ -15,6 +17,8 @@ sync-splat is a tiny self-hosted tool for moving rich text and files between the
 
 Everything lives in memory and disappears when you stop the server. There is no database and nothing leaves your network.
 
+sync-splat is made by [Magic Zebra Ltd](https://www.magiczebra.co.uk). It's free and always will be. If it saves you emailing yourself one more screenshot, you can [support its development on Ko-fi](https://ko-fi.com/magiczebra).
+
 ## Features
 
 - **One command.** `npx sync-splat` — no install, no config.
@@ -23,7 +27,9 @@ Everything lives in memory and disappears when you stop the server. There is no 
 - **Files.** Drag‑and‑drop, pick, or paste a screenshot — files stage as previews in the compose box and send when you broadcast. Images preview inline; everything else downloads.
 - **Shared folder (opt-in).** Add `--share` and a **Files** tab lets any device browse, download, and upload straight to disk. Bare `--share` shares the directory you launched from; `--share <path>` shares somewhere else. Off unless you ask for it; dotfiles are never listed or served.
 - **Optional passcode.** Start with `--pin` to require a short passcode on every read and write. It rides along in the QR/URL fragment, so a phone scan still just works, and non‑browser clients pass it with `--key`.
-- **Terminal client.** Talk to a running server without a browser: `sync-splat send`, `history`, and `get` push and pull text and files straight from the shell.
+- **Screen sharing.** Share the server machine's screen from the browser and watch it on any device, phones included. Video goes peer to peer over WebRTC; the server only introduces the two ends. See [Screen sharing](#screen-sharing).
+- **Who's here.** A device list in the header shows every connected browser and terminal, so you can see who can read (or watch) along.
+- **Terminal client.** Talk to a running server without a browser: `sync-splat send`, `history`, and `get` push and pull text and files straight from the shell, and `sync-splat watch` streams new splats as they arrive.
 - **Live sync.** History is shared over WebSockets — new items appear everywhere at once.
 - **Zero runtime dependencies to speak of.** The server is `node:http` + [socket.io]; the QR encoder is hand‑rolled. No Express, no CORS shims.
 - **Ephemeral & private.** In‑memory only, same‑origin only, MIT licensed.
@@ -71,6 +77,17 @@ sync-splat serves a folder over the network, a bit like `python -m http.server` 
 - **Upload** new files into any folder from the app. Uploads **never overwrite**: if a name is taken, sync-splat inserts a space and appends `(1)`, `(2)`, … before the extension.
 - **Dotfiles stay private.** Entries whose name starts with `.` — and any directory named that way — are never listed, downloaded, or written to, so `.env`, `.git`, and friends don't leak. Symlinks that lead outside the shared folder are not followed.
 
+## Screen sharing
+
+Open the app on the machine running sync-splat (the printed **Local** URL, `http://localhost:…`) and click the screen icon in the header. Pick a screen or window in the browser's picker, and every other device gets a banner offering **Watch**.
+
+- **Only the server machine can share.** Browsers only allow screen capture on a secure context, and over plain HTTP the only secure origin is `localhost`. Other devices can watch but won't see a share button. (iOS can't share at all, in any browser.)
+- **Viewing works everywhere**, including phones over `http://`. The viewer opens full-width with a fullscreen button.
+- **Peer to peer, LAN only.** Video flows directly between the sharer's browser and each viewer's browser over WebRTC; the sync-splat server relays only the few small handshake messages and never sees a frame. No STUN or TURN servers are used, so both devices must be on the same network.
+- **One share at a time, up to 8 viewers.** Each viewer costs the sharing machine an encode.
+- **The sharer sees who's watching.** The "You're sharing" banner shows the viewer count; tap it for their device names. Without a passcode anyone on the network can watch, so use [`--pin`](#passcode) if that matters.
+- **Stopping:** the banner's **Stop** button, the browser's own "Stop sharing" bar, or closing the tab all end the share for everyone.
+
 ## Passcode
 
 By default sync-splat has no passcode — anyone who can reach the port can read and post. Start with `--pin` to require a short passcode instead.
@@ -98,6 +115,17 @@ sync-splat get 2                             # print text, or stream a file…
 sync-splat get 2 > out.png                   # …to a file
 ```
 
+Leave `watch` running to follow along live:
+
+```bash
+sync-splat watch                             # print new text, list new files
+sync-splat watch --copy                      # also put each new text on your clipboard
+sync-splat watch --files ~/Downloads/splats  # save every new file into a folder
+sync-splat watch --json                      # one JSON event per line, for scripts
+```
+
+`watch` prints only what arrives after it starts (use `history` for the backlog) and reconnects on its own if the server restarts. Text goes to stdout with terminal control characters stripped; status messages go to stderr. `--files` never overwrites: a name that is taken gets ` (1)`, ` (2)`, … like shared‑folder uploads. `--copy` uses `pbcopy`, `clip`, `wl-copy`, `xclip` or `xsel`, whichever fits the platform. Each watcher shows up in the device list as "Terminal · &lt;hostname&gt;"; rename it with `--name`.
+
 Point it at a non‑default server and pass a passcode as needed:
 
 ```bash
@@ -120,6 +148,8 @@ sync-splat send "no more flags"
 - **Text is sanitized.** Shared HTML is sanitized (with DOMPurify) before it is rendered, to prevent stored‑XSS between clients.
 - **Files are download-only.** Uploads are served with `X-Content-Type-Options: nosniff` and, for anything that isn't a common raster image, as `application/octet-stream` with a `Content-Disposition: attachment`. Only the image types in the allow‑list (PNG, JPEG, GIF, WebP, AVIF) are served inline for thumbnails. SVG is deliberately treated as a download because it can contain script.
 - **The shared folder is read/write over the network — but only when you pass `--share`.** It's off by default. Once enabled, anyone who can reach the port can list and download its files and upload new ones straight to disk. Path traversal is blocked (all three share routes go through one validator that rejects `..`, absolute paths, backslashes, and NUL) and dotfiles/dot‑dirs (`.env`, `.git`, …) are never listed, served, or written, but everything else in that tree is exposed. Uploads never overwrite existing files, and the same `Origin` allow‑list that guards clipboard uploads guards share uploads. Point it somewhere deliberate with `--share <path>`.
+- **Screen sharing is visible to everyone who can reach the port.** Without a passcode, any device on the network can join a share; the sharer sees each viewer's name in the banner. Video is sent peer to peer with WebRTC's built‑in DTLS‑SRTP encryption, but the handshake that sets it up travels over the same plain‑HTTP socket as everything else, so it is not protected against someone actively tampering with your network. The server relays handshake messages only between the sharer and its joined viewers, and stamps the sender itself so one client can't impersonate another.
+- **Device names are self‑reported.** The device list shows what each browser or terminal says it is (cleaned of control and invisible characters). Treat it as a convenience, not an identity check.
 - **Nothing from the clipboard is persisted.** Shared text and staged file blobs live in memory and are gone when the process exits. (Files you upload to the shared folder are, of course, written to disk on purpose.)
 
 **Bottom line: use it on trusted networks only.** Don't expose the port to the internet or to networks with people you don't trust.
@@ -135,6 +165,9 @@ Sensible caps keep memory bounded. Files and text share a single history list.
 | History items kept (text + files) | 20 |
 | Total file bytes held in memory | 200 MB (oldest evicted first) |
 | Per‑socket rate limit | 30 events / 10 s |
+| Per‑socket screen‑share signaling rate limit | 300 events / 10 s |
+| Screen‑share viewers | 8 |
+| Concurrent `watch` streams | 16 |
 
 Oversize or malformed messages are silently dropped; the server never crashes on bad input.
 
@@ -176,9 +209,15 @@ pnpm lint         # eslint
 
 In dev, the Vite server proxies `/socket.io` and `/api` to the standalone server on `:3011`, so the app behaves exactly as it does in production (same origin, no CORS).
 
-## License
+## Support sync-splat
 
-[MIT](LICENSE) © Joseph Maynard
+sync-splat is free, with no accounts, no tracking and no ads. If it's useful to you, you can support its development on [Ko-fi](https://ko-fi.com/magiczebra), or star the repo and tell people about it.
+
+## Licence
+
+sync-splat is open source under the [MIT License](LICENSE): free to use, modify and redistribute, including commercially. Copyright © [Magic Zebra Ltd](https://www.magiczebra.co.uk).
+
+The **sync-splat name, logo and branding** are owned by Magic Zebra Ltd and are not covered by the MIT licence. A modified or rebranded fork must not present itself as an official sync-splat release. See [TRADEMARKS.md](TRADEMARKS.md) for details.
 
 [socket.io]: https://socket.io
 [pnpm]: https://pnpm.io
