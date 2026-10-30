@@ -211,6 +211,28 @@ export default function QrModal({ onClose }: Props) {
               {refreshError}
             </p>
           )}
+          {/* External links open in a new tab so the app (and its socket)
+              stays put; on an offline LAN they simply won't load. */}
+          <p className="text-center text-xs text-gray-400 dark:text-gray-500">
+            sync-splat by{" "}
+            <a
+              href="https://www.magiczebra.co.uk"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="whitespace-nowrap hover:underline"
+            >
+              Magic Zebra Ltd
+            </a>
+            {" · "}
+            <a
+              href="https://ko-fi.com/magiczebra"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="whitespace-nowrap font-medium text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Support us on Ko-fi
+            </a>
+          </p>
         </div>
       </div>
     </div>
