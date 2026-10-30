@@ -5,6 +5,8 @@
   Run one command, scan the QR code on your phone, and splat things back and forth — no accounts, no cloud, no cables.</p>
 
   <pre><code>npx sync-splat</code></pre>
+
+  <p><a href="https://ko-fi.com/magiczebra"><img src="https://img.shields.io/badge/Ko--fi-Support%20sync--splat-ff5e5b?logo=ko-fi&logoColor=white" alt="Support sync-splat on Ko-fi" /></a></p>
 </div>
 
 ---
@@ -14,6 +16,8 @@
 sync-splat is a tiny self-hosted tool for moving rich text and files between the devices already sitting on your Wi‑Fi — your laptop, your phone, a colleague's machine across the table. It starts a single server that serves a small web app and a real‑time socket on the same port, prints the LAN URLs, and draws a scannable QR code right in your terminal.
 
 Everything lives in memory and disappears when you stop the server. There is no database and nothing leaves your network.
+
+sync-splat is made by [Magic Zebra Ltd](https://www.magiczebra.co.uk). It's free and always will be. If it saves you emailing yourself one more screenshot, you can [support its development on Ko-fi](https://ko-fi.com/magiczebra).
 
 ## Features
 
@@ -205,9 +209,15 @@ pnpm lint         # eslint
 
 In dev, the Vite server proxies `/socket.io` and `/api` to the standalone server on `:3011`, so the app behaves exactly as it does in production (same origin, no CORS).
 
-## License
+## Support sync-splat
 
-[MIT](LICENSE) © Joseph Maynard
+sync-splat is free, with no accounts, no tracking and no ads. If it's useful to you, you can support its development on [Ko-fi](https://ko-fi.com/magiczebra), or star the repo and tell people about it.
+
+## Licence
+
+sync-splat is open source under the [MIT License](LICENSE): free to use, modify and redistribute, including commercially. Copyright © [Magic Zebra Ltd](https://www.magiczebra.co.uk).
+
+The **sync-splat name, logo and branding** are owned by Magic Zebra Ltd and are not covered by the MIT licence. A modified or rebranded fork must not present itself as an official sync-splat release. See [TRADEMARKS.md](TRADEMARKS.md) for details.
 
 [socket.io]: https://socket.io
 [pnpm]: https://pnpm.io

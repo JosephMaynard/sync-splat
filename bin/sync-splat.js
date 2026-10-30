@@ -36,6 +36,8 @@ $SYNC_SPLAT_KEY), --file <path>, --out <path>. \`watch\` also takes --json,
 
 Use only on networks you trust: traffic is not encrypted. A passcode (--pin)
 gates access but is not a substitute for TLS.
+
+sync-splat is made by Magic Zebra Ltd. Support it: https://ko-fi.com/magiczebra
 `;
 
 // Client subcommands are handled by the CLI client module, not the server path.

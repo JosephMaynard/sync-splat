@@ -4,10 +4,18 @@
   "description": "Share text and small files between devices on your local network. Run it, scan the QR code, splat.",
   "type": "module",
   "license": "MIT",
-  "author": "Joseph Maynard",
+  "author": "Magic Zebra Ltd",
   "repository": {
     "type": "git",
-    "url": "https://github.com/josephmaynard/sync-splat"
+    "url": "git+https://github.com/MagicZebraLtd/sync-splat.git"
+  },
+  "homepage": "https://github.com/MagicZebraLtd/sync-splat#readme",
+  "bugs": {
+    "url": "https://github.com/MagicZebraLtd/sync-splat/issues"
+  },
+  "funding": {
+    "type": "ko-fi",
+    "url": "https://ko-fi.com/magiczebra"
   },
   "keywords": [
     "clipboard",
